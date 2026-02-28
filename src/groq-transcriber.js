@@ -47,23 +47,28 @@ class GroqTranscriber {
 
     const startTime = Date.now();
 
-    const response = await axios.post(GROQ_API_URL, form, {
-      headers: {
-        ...form.getHeaders(),
-        'Authorization': `Bearer ${this.apiKey}`
-      },
-      timeout: this.timeout,
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    });
+    try {
+      const response = await axios.post(GROQ_API_URL, form, {
+        headers: {
+          ...form.getHeaders(),
+          'Authorization': `Bearer ${this.apiKey}`
+        },
+        timeout: this.timeout,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
+      });
 
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    const text = response.data?.text || '';
-    const detectedLang = response.data?.language || language;
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const text = response.data?.text || '';
+      const detectedLang = response.data?.language || language;
 
-    console.log(`[Groq] Done in ${elapsed}s (${text.length} chars, lang: ${detectedLang})`);
+      console.log(`[Groq] Done in ${elapsed}s (${text.length} chars, lang: ${detectedLang})`);
 
-    return { text, language: detectedLang };
+      return { text, language: detectedLang };
+    } catch (error) {
+      const detail = error.response?.data?.error?.message || error.response?.data || error.message || 'unknown error';
+      throw new Error(`Groq API error: ${typeof detail === 'object' ? JSON.stringify(detail) : detail}`);
+    }
   }
 }
 

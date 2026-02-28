@@ -405,51 +405,54 @@ class NotionClient {
   }
 
   /**
-   * Ensure Audio and Video options exist on the Type select property.
-   * Notion rejects unknown select values, so we PATCH the database schema
-   * on first run to add them alongside existing options.
+   * Ensure required schema exists on the database:
+   * - Type select options: Audio, Video, YouTube
+   * - Source rich_text property (for filepath/URL traceability)
    */
   async ensureTypeOptions() {
     try {
       // Fetch current database schema
       const db = await this.client.get(`/databases/${this.databaseId}`);
-      const typeProperty = db.data.properties?.['Type'];
+      const properties = db.data.properties || {};
+      const patchPayload = {};
 
-      if (!typeProperty || typeProperty.type !== 'select') {
-        console.log('[Notion] No "Type" select property found, skipping option setup');
-        return;
-      }
+      // --- Type select options ---
+      const typeProperty = properties['Type'];
+      if (typeProperty && typeProperty.type === 'select') {
+        const existingNames = (typeProperty.select?.options || []).map(o => o.name);
+        const needed = [
+          { name: 'Audio', color: 'purple' },
+          { name: 'Video', color: 'orange' },
+          { name: 'YouTube', color: 'red' }
+        ].filter(opt => !existingNames.includes(opt.name));
 
-      const existingNames = (typeProperty.select?.options || []).map(o => o.name);
-      const needed = [
-        { name: 'Audio', color: 'purple' },
-        { name: 'Video', color: 'orange' },
-        { name: 'YouTube', color: 'red' }
-      ].filter(opt => !existingNames.includes(opt.name));
-
-      if (needed.length === 0) {
-        console.log('[Notion] Audio/Video/YouTube type options already exist');
-        return;
-      }
-
-      // Merge existing + new options
-      const allOptions = [
-        ...typeProperty.select.options.map(o => ({ name: o.name, color: o.color })),
-        ...needed
-      ];
-
-      await this.client.patch(`/databases/${this.databaseId}`, {
-        properties: {
-          'Type': {
-            select: { options: allOptions }
-          }
+        if (needed.length > 0) {
+          const allOptions = [
+            ...typeProperty.select.options.map(o => ({ name: o.name, color: o.color })),
+            ...needed
+          ];
+          patchPayload['Type'] = { select: { options: allOptions } };
+          console.log(`[Notion] Will add type options: ${needed.map(o => o.name).join(', ')}`);
         }
-      });
+      }
 
-      console.log(`[Notion] Added type options: ${needed.map(o => o.name).join(', ')}`);
+      // --- Source rich_text property ---
+      if (!properties['Source']) {
+        patchPayload['Source'] = { rich_text: {} };
+        console.log('[Notion] Will create "Source" property');
+      }
+
+      // Apply schema updates if any
+      if (Object.keys(patchPayload).length > 0) {
+        await this.client.patch(`/databases/${this.databaseId}`, {
+          properties: patchPayload
+        });
+        console.log('[Notion] Schema updated');
+      } else {
+        console.log('[Notion] Schema already up to date');
+      }
     } catch (error) {
-      console.error('[Notion] Could not update type options:', error.response?.data || error.message);
-      // Non-fatal - worker can still create pages with existing types
+      console.error('[Notion] Could not update schema:', error.response?.data || error.message);
     }
   }
 

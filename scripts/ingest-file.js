@@ -157,6 +157,7 @@ async function main() {
   });
 
   await scriberr.init();
+  await notion.ensureTypeOptions();
 
   // Process each file
   let succeeded = 0;

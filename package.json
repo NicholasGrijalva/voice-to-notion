@@ -6,7 +6,10 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "node scripts/test-connection.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:connection": "node scripts/test-connection.js",
     "ingest": "node scripts/ingest-url.js",
     "ingest-file": "node scripts/ingest-file.js"
   },
@@ -31,7 +34,8 @@
     "form-data": "^4.0.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.0"
+    "nodemon": "^3.0.0",
+    "vitest": "^3.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
