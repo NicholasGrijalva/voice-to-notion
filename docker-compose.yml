@@ -1,0 +1,135 @@
+# Voice-to-Notion Transcription System
+# One-command deployment: docker-compose up -d
+#
+# Services:
+# - scriberr: Self-hosted transcription server (WhisperX)
+# - notion-worker: Syncs transcripts to Notion + media ingestion pipeline
+# - ollama: (Optional) Local LLM for future summarization features
+#
+# Prerequisites:
+# 1. Copy .env.example to .env
+# 2. Fill in your API keys
+# 3. Run: docker-compose up -d
+
+services:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SCRIBERR - Self-hosted Transcription Server
+  # ═══════════════════════════════════════════════════════════════════════════
+  scriberr:
+    image: ghcr.io/rishikanthc/scriberr:latest
+    container_name: scriberr
+    ports:
+      - "${SCRIBERR_PORT:-8080}:8080"
+    volumes:
+      - scriberr_data:/app/data
+      # Optional: Mount local audio folder for batch processing
+      # - ./uploads:/app/uploads:ro
+    environment:
+      # Whisper model: tiny, base, small, medium, large-v2, large-v3
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      # Device: cuda (NVIDIA GPU), cpu, mps (Apple Silicon native only)
+      DEVICE: ${DEVICE:-cpu}
+      # Compute type: float32, int8 (faster on CPU)
+      COMPUTE_TYPE: ${COMPUTE_TYPE:-int8}
+      # Batch size: lower = less RAM usage
+      WHISPER_BATCH_SIZE: ${WHISPER_BATCH_SIZE:-4}
+      # Speaker identification (requires x86_64 — disabled on ARM64/Apple Silicon)
+      ENABLE_DIARIZATION: "false"
+      # Disable built-in OpenAI summarization (we use local)
+      ENABLE_SUMMARIZATION: "false"
+    # GPU support (uncomment for NVIDIA)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - transcription
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # NOTION WORKER - Scriberr Sync + Media Ingestion Pipeline
+  # ═══════════════════════════════════════════════════════════════════════════
+  notion-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: notion-worker
+    volumes:
+      # Persist sync state across restarts
+      - worker_data:/app/data
+      # Media inbox — drop URL files here for ingestion
+      # Mount a host folder so you can drop files from outside Docker
+      - ${MEDIA_INBOX_PATH:-./inbox_media}:/app/data/inbox_media
+      # Processed files archive
+      - ${MEDIA_PROCESSED_PATH:-./processed}:/app/data/processed
+      # Temp directory for downloads/extraction
+      - /tmp/notion-worker:/tmp/media-pipeline
+    environment:
+      # Scriberr connection (uses Docker network)
+      SCRIBERR_API_URL: http://scriberr:8080
+      SCRIBERR_USERNAME: ${SCRIBERR_USERNAME}
+      SCRIBERR_PASSWORD: ${SCRIBERR_PASSWORD}
+      # Notion API credentials
+      NOTION_API_KEY: ${NOTION_API_KEY}
+      NOTION_DATABASE_ID: ${NOTION_DATABASE_ID}
+      # Worker settings
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-30}
+      STATE_FILE: /app/data/.sync-state.json
+      TEMP_DIR: /tmp/media-pipeline
+      # Groq cloud transcription (optional — much faster than local Whisper)
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # Media pipeline settings
+      ENABLE_MEDIA_PIPELINE: ${ENABLE_MEDIA_PIPELINE:-true}
+      MEDIA_POLL_INTERVAL_SECONDS: ${MEDIA_POLL_INTERVAL_SECONDS:-15}
+      AUDIO_FORMAT: ${AUDIO_FORMAT:-mp3}
+    depends_on:
+      scriberr:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - transcription
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # OLLAMA - Local LLM (Optional, for future summarization)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Uncomment to enable local LLM summarization
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     OLLAMA_NUM_PARALLEL: 1
+  #   restart: unless-stopped
+  #   networks:
+  #     - transcription
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PERSISTENT VOLUMES
+# ═══════════════════════════════════════════════════════════════════════════
+volumes:
+  scriberr_data:
+    name: voice2notion_scriberr
+  worker_data:
+    name: voice2notion_worker
+  # ollama_data:
+  #   name: voice2notion_ollama
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NETWORK
+# ═══════════════════════════════════════════════════════════════════════════
+networks:
+  transcription:
+    name: voice2notion_network
+    driver: bridge

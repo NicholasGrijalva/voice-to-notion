@@ -1,0 +1,36 @@
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# State files
+.sync-state.json
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp files
+/tmp/
+*.tmp
+
+# Media pipeline working dirs (contents are transient)
+inbox_media/*
+processed/*
+!inbox_media/.gitkeep
+!processed/.gitkeep
