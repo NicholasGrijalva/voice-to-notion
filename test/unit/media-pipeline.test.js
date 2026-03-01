@@ -681,6 +681,75 @@ describe('MediaPipeline', () => {
         expect.objectContaining({ source: 'Audio' })
       );
     });
+
+    it('should use opts.title override instead of deriving from filename', async () => {
+      mockExtractor.isAudioOnly.mockResolvedValue(true);
+
+      await pipeline.ingestFile('/test/inbox/audio.mp3', { title: 'Custom Title' });
+
+      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Custom Title' })
+      );
+    });
+
+    it('should call groq.generateTitle when transcript > 50 chars', async () => {
+      mockGroq.generateTitle = vi.fn().mockResolvedValue('AI Generated Title');
+      mockGroq.transcribe.mockResolvedValue({ text: 'x'.repeat(60), language: 'en' });
+      mockExtractor.isAudioOnly.mockResolvedValue(true);
+
+      await pipeline.ingestFile('/test/inbox/audio.mp3');
+
+      expect(mockGroq.generateTitle).toHaveBeenCalledWith('x'.repeat(60));
+      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'AI Generated Title' })
+      );
+    });
+
+    it('should keep derived title when groq.generateTitle returns null', async () => {
+      mockGroq.generateTitle = vi.fn().mockResolvedValue(null);
+      mockGroq.transcribe.mockResolvedValue({ text: 'x'.repeat(60), language: 'en' });
+      mockExtractor.isAudioOnly.mockResolvedValue(true);
+
+      await pipeline.ingestFile('/test/inbox/my_recording.mp3');
+
+      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'my recording' })
+      );
+    });
+
+    it('should not call groq.generateTitle when transcript <= 50 chars', async () => {
+      mockGroq.generateTitle = vi.fn();
+      mockGroq.transcribe.mockResolvedValue({ text: 'short', language: 'en' });
+      mockExtractor.isAudioOnly.mockResolvedValue(true);
+
+      await pipeline.ingestFile('/test/inbox/audio.mp3');
+
+      expect(mockGroq.generateTitle).not.toHaveBeenCalled();
+    });
+
+    it('should skip title generation when groq is null', async () => {
+      pipeline.groq = null;
+      mockScriberr.getJob.mockResolvedValue({ status: 'completed' });
+      mockScriberr.getTranscript.mockResolvedValue({ text: 'x'.repeat(60), language: 'en' });
+      vi.spyOn(pipeline, 'sleep').mockResolvedValue();
+      mockExtractor.isAudioOnly.mockResolvedValue(true);
+
+      await pipeline.ingestFile('/test/inbox/audio.mp3');
+
+      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'audio' })
+      );
+    });
+
+    it('should pass sourceRef (filePath) to createTranscriptPage', async () => {
+      mockExtractor.isAudioOnly.mockResolvedValue(true);
+
+      await pipeline.ingestFile('/test/inbox/audio.mp3');
+
+      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceRef: '/test/inbox/audio.mp3' })
+      );
+    });
   });
 
   describe('transcribeViaScriberr()', () => {

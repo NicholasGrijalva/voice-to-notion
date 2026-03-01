@@ -119,6 +119,28 @@ const SAMPLE_GROQ_RESPONSE = {
   },
 };
 
+const SAMPLE_GROQ_TITLE_RESPONSE = {
+  data: {
+    choices: [{ message: { content: 'AI Generated Title' } }],
+  },
+};
+
+const SAMPLE_TELEGRAM_VOICE_FILE = {
+  file_id: 'voice-file-123',
+  file_unique_id: 'unique-123',
+  duration: 5,
+  file_size: 50000,
+};
+
+const SAMPLE_TELEGRAM_AUDIO_FILE = {
+  file_id: 'audio-file-456',
+  file_unique_id: 'unique-456',
+  duration: 180,
+  file_size: 3 * 1024 * 1024,
+  title: 'My Podcast Episode',
+  file_name: 'episode_42.mp3',
+};
+
 module.exports = {
   SAMPLE_YT_METADATA,
   SAMPLE_FFPROBE_AUDIO_ONLY,
@@ -130,4 +152,7 @@ module.exports = {
   SAMPLE_NOTION_PAGE_RESPONSE,
   SAMPLE_NOTION_FILE_UPLOAD_RESPONSE,
   SAMPLE_GROQ_RESPONSE,
+  SAMPLE_GROQ_TITLE_RESPONSE,
+  SAMPLE_TELEGRAM_VOICE_FILE,
+  SAMPLE_TELEGRAM_AUDIO_FILE,
 };

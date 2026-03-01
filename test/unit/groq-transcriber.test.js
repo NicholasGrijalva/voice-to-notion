@@ -106,4 +106,75 @@ describe('GroqTranscriber', () => {
         .rejects.toThrow('Network error');
     });
   });
+
+  describe('generateTitle()', () => {
+    beforeEach(() => {
+      vi.spyOn(axios, 'post').mockResolvedValue({
+        data: { choices: [{ message: { content: 'Generated Title' } }] },
+      });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('should return null for empty transcript', async () => {
+      const result = await groq.generateTitle('');
+      expect(result).toBeNull();
+    });
+
+    it('should return null for short transcript (< 20 chars)', async () => {
+      const result = await groq.generateTitle('too short');
+      expect(result).toBeNull();
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('should send POST to Groq chat completions endpoint with correct model', async () => {
+      await groq.generateTitle('This is a long enough transcript to trigger title generation.');
+
+      expect(axios.post).toHaveBeenCalledWith(
+        'https://api.groq.com/openai/v1/chat/completions',
+        expect.objectContaining({
+          model: 'llama-3.3-70b-versatile',
+        }),
+        expect.objectContaining({
+          headers: { 'Authorization': 'Bearer test-api-key' },
+          timeout: 10000,
+        })
+      );
+    });
+
+    it('should truncate transcript to 1000 chars in user message', async () => {
+      const longTranscript = 'x'.repeat(2000);
+
+      await groq.generateTitle(longTranscript);
+
+      const callArgs = axios.post.mock.calls[0][1];
+      const userMessage = callArgs.messages.find(m => m.role === 'user');
+      expect(userMessage.content.length).toBe(1000);
+    });
+
+    it('should return trimmed title string from response', async () => {
+      axios.post.mockResolvedValue({
+        data: { choices: [{ message: { content: '  My Title  ' } }] },
+      });
+
+      const result = await groq.generateTitle('A sufficiently long transcript for testing purposes.');
+      expect(result).toBe('My Title');
+    });
+
+    it('should return null when response has no choices', async () => {
+      axios.post.mockResolvedValue({ data: { choices: [] } });
+
+      const result = await groq.generateTitle('A sufficiently long transcript for testing purposes.');
+      expect(result).toBeNull();
+    });
+
+    it('should return null on API error (does not throw)', async () => {
+      axios.post.mockRejectedValue(new Error('API rate limit'));
+
+      const result = await groq.generateTitle('A sufficiently long transcript for testing purposes.');
+      expect(result).toBeNull();
+    });
+  });
 });
