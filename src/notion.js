@@ -204,17 +204,6 @@ class NotionClient {
           select: {
             name: source
           }
-        },
-
-        // Transcript (rich_text property, truncated - full text goes in page body)
-        'Transcript': {
-          rich_text: [
-            {
-              text: {
-                content: transcript.slice(0, 1900) // Notion rich_text limit ~2000
-              }
-            }
-          ]
         }
       };
 

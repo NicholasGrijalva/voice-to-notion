@@ -276,12 +276,14 @@ class MediaPipeline {
    * Ingest a local media file (mp3, mp4, mov, wav, etc.)
    *
    * @param {string} filePath - Absolute path to the media file
+   * @param {Object} opts - Optional overrides
+   * @param {string} opts.title - Override title (instead of deriving from filename)
    * @returns {Promise<{pageId: string, title: string}>}
    */
-  async ingestFile(filePath) {
+  async ingestFile(filePath, opts = {}) {
     const startTime = Date.now();
     const filename = path.basename(filePath);
-    const title = filename.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
+    let title = opts.title || filename.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
     console.log(`\n[MediaPipeline] ═══ Ingesting file: ${filename} ═══`);
 
     let audioPath = null;
@@ -320,7 +322,17 @@ class MediaPipeline {
         transcript = { text: '[Transcription not available — no Scriberr configured]', language: 'en' };
       }
 
-      // Step 3: Upload audio to Notion
+      // Step 3: Generate title from transcript if we don't have a good one
+      if (this.groq && transcript.text.length > 50) {
+        try {
+          const generatedTitle = await this.groq.generateTitle(transcript.text);
+          if (generatedTitle) title = generatedTitle;
+        } catch (e) {
+          // Non-fatal, keep existing title
+        }
+      }
+
+      // Step 4: Upload audio to Notion
       try {
         audioFileUploadId = await this.notion.uploadFile(
           audioPath,
@@ -331,7 +343,7 @@ class MediaPipeline {
         console.warn(`[MediaPipeline] Audio upload to Notion failed:`, error.message);
       }
 
-      // Step 4: Create Notion page
+      // Step 5: Create Notion page
       const processingTime = (Date.now() - startTime) / 1000;
       const source = isAudio ? 'Audio' : 'Video';
       const pageId = await this.notion.createTranscriptPage({

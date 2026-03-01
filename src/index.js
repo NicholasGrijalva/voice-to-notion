@@ -1,8 +1,9 @@
 /**
  * Voice-to-Notion Worker
- * Entry point — runs two pipelines in parallel:
+ * Entry point — runs pipelines in parallel:
  *   1. Scriberr Sync: Polls Scriberr for completed transcripts → Notion
  *   2. Media Pipeline: Watches inbox_media/ for URLs → yt-dlp → ffmpeg → Notion
+ *   3. Telegram Bot: Mobile capture layer → URLs/voice/media → Notion
  */
 
 require('dotenv').config();
@@ -60,6 +61,8 @@ if (config.media.enabled) {
   console.log(`  Audio Format:     ${config.media.audioFormat}`);
   console.log(`  Inbox Dir:        ${config.media.inboxDir}`);
 }
+console.log(`  Telegram Bot:     ${process.env.TELEGRAM_BOT_TOKEN ? 'ENABLED' : 'DISABLED'}`);
+
 
 // Initialize shared clients
 const scriberr = new ScriberrClient(config.scriberr.url, config.scriberr.username, config.scriberr.password);
@@ -96,10 +99,22 @@ if (config.media.enabled) {
 }
 
 // Graceful shutdown handlers
+// Pipeline 3: Telegram Bot (optional — mobile capture layer)
+let telegramBot = null;
+if (process.env.TELEGRAM_BOT_TOKEN) {
+  const TelegramBot = require('./telegram-bot');
+  telegramBot = new TelegramBot({
+    pipeline: mediaPipeline,
+    notionClient: notion,
+    tempDir: config.media.tempDir ? config.media.tempDir + '/telegram' : '/tmp/telegram-downloads'
+  });
+}
+
 const shutdown = (signal) => {
   console.log(`\n[Worker] Received ${signal}, shutting down gracefully...`);
   syncWorker.stop();
   if (mediaPipeline) mediaPipeline.stop();
+  if (telegramBot) telegramBot.stop();
   process.exit(0);
 };
 
@@ -111,6 +126,7 @@ process.on('uncaughtException', (error) => {
   console.error('[Worker] Uncaught exception:', error);
   syncWorker.stop();
   if (mediaPipeline) mediaPipeline.stop();
+  if (telegramBot) telegramBot.stop();
   process.exit(1);
 });
 
@@ -132,6 +148,11 @@ async function main() {
   // Start media pipeline (if enabled)
   if (mediaPipeline) {
     await mediaPipeline.start();
+  }
+
+  // Start Telegram bot (if configured)
+  if (telegramBot) {
+    await telegramBot.start();
   }
 
   console.log('\n[Worker] All pipelines running. Waiting for work...\n');

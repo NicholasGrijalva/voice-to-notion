@@ -70,6 +70,40 @@ class GroqTranscriber {
       throw new Error(`Groq API error: ${typeof detail === 'object' ? JSON.stringify(detail) : detail}`);
     }
   }
+  /**
+   * Generate a short title from transcript text using Groq's LLM API
+   *
+   * @param {string} transcript - Transcript text
+   * @returns {Promise<string|null>} Generated title or null on failure
+   */
+  async generateTitle(transcript) {
+    if (!transcript || transcript.length < 20) return null;
+
+    try {
+      const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          {
+            role: 'system',
+            content: 'Generate a short, descriptive title (max 8 words) for this transcript. Return only the title, nothing else. No quotes.'
+          },
+          { role: 'user', content: transcript.slice(0, 1000) }
+        ],
+        max_tokens: 30,
+        temperature: 0.3
+      }, {
+        headers: { 'Authorization': `Bearer ${this.apiKey}` },
+        timeout: 10000
+      });
+
+      const title = response.data.choices?.[0]?.message?.content?.trim();
+      if (title) console.log(`[Groq] Generated title: ${title}`);
+      return title || null;
+    } catch (error) {
+      console.warn(`[Groq] Title generation failed: ${error.message}`);
+      return null;
+    }
+  }
 }
 
 module.exports = GroqTranscriber;

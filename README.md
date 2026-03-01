@@ -24,6 +24,8 @@ docker compose logs -f notion-worker
 
 ## Features
 
+- **Telegram bot** — send URLs, voice notes, or media from your phone; get Notion pages back
+- **Auto-generated titles** — Groq LLM summarizes transcripts into descriptive page titles
 - **Local transcription** via Scriberr (WhisperX)
 - **Cloud transcription** via Groq Whisper API (optional, ~164x real-time)
 - **Audio file upload** to Notion (uses FileUpload API)
@@ -37,7 +39,7 @@ docker compose logs -f notion-worker
 
 ## Architecture
 
-Two pipelines run in parallel inside a single worker container:
+Three pipelines run in parallel inside a single worker container:
 
 ```
 Pipeline 1: Voice Memos (Scriberr Sync)
@@ -72,7 +74,18 @@ Pipeline 2b: Local File Ingestion (ffmpeg + Groq/Scriberr)
 │ (mp3/mp4/..) │     │ (extract)   │     │ (Whisper)   │     │  Database   │
 └─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
 
+Pipeline 3: Telegram Bot (mobile capture)
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Telegram    │────▶│  Download   │────▶│ Groq/Scrib. │────▶│   Notion    │
+│ (URL/voice)  │     │  + ffmpeg   │     │ (Whisper)   │     │  Database   │
+└─────────────┘     └─────────────┘     └──────┬──────┘     └─────────────┘
+                                               │
+                                        ┌──────┴──────┐
+                                        │  Groq LLM   │ auto-generates title
+                                        └─────────────┘
+
 Transcription routing: Groq (if GROQ_API_KEY set, <25MB) → Scriberr (local fallback)
+Title generation: Groq LLM (llama-3.3-70b) generates titles from transcript content
 ```
 
 ## Setup
@@ -93,8 +106,8 @@ Your database needs these properties (the worker maps to them automatically):
 | Title | title | Auto-filled with media title/filename |
 | Status | select | Set to "New" on creation |
 | Date Added | date | Timestamp of when transcript was created |
-| Type | select | "Audio" or "Video" (auto-created on first run) |
-| Transcript | rich_text | Truncated transcript (full text in page body) |
+| Type | select | "Audio", "Video", or "YouTube" (auto-created on first run) |
+| Source | rich_text | Source filepath or URL (auto-created on first run) |
 | Source Filename | rich_text | Original filename |
 | Processing Time (s) | number | How long transcription took |
 | URL | url | Source URL (for media pipeline items) |
@@ -124,7 +137,17 @@ SCRIBERR_PASSWORD=YourPassword
 
 The worker auto-registers on first boot (fresh Scriberr install) and logs in on subsequent starts.
 
-### 4. Start Everything
+### 4. Telegram Bot (optional — mobile capture)
+
+1. Open Telegram, message [@BotFather](https://t.me/botfather)
+2. Send `/newbot`, pick a name and username
+3. Copy the token → `TELEGRAM_BOT_TOKEN` in `.env`
+4. Message [@userinfobot](https://t.me/userinfobot) to get your user ID
+5. Add it to `TELEGRAM_ALLOWED_USERS` in `.env`
+
+The bot uses long-polling (no webhooks, no SSL, no exposed ports needed).
+
+### 5. Start Everything
 
 ```bash
 # Option A: Boot script (handles sequencing and health checks)
@@ -135,6 +158,18 @@ docker compose up -d
 ```
 
 ## Usage
+
+### From Telegram (recommended for mobile)
+
+Send any of these to your bot:
+
+- **YouTube/podcast URL** — downloads, transcribes, creates Notion page with video title
+- **Voice message** — transcribes, generates AI title from content
+- **Video message** — extracts audio, transcribes, generates AI title
+- **Audio/video file** — same pipeline as voice messages
+- **Multiple URLs in one message** — processes each one sequentially
+
+The bot replies with a link to the created Notion page.
 
 ### From iPhone (iOS Shortcut)
 
@@ -273,6 +308,8 @@ All config is in `.env`:
 | `AUDIO_FORMAT` | Output audio format: mp3/m4a/wav | mp3 |
 | `MEDIA_INBOX_PATH` | Host path for inbox mount | ./inbox_media |
 | `MEDIA_PROCESSED_PATH` | Host path for processed files | ./processed |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather | (optional) |
+| `TELEGRAM_ALLOWED_USERS` | Comma-separated Telegram user IDs | (optional) |
 
 ## Troubleshooting
 
@@ -346,12 +383,13 @@ docker compose build notion-worker && docker compose up -d notion-worker
 ```
 voice-to-notion/
 ├── src/
-│   ├── index.js            # Entry point (runs both pipelines)
+│   ├── index.js            # Entry point (runs all pipelines)
 │   ├── scriberr.js         # Scriberr API client
 │   ├── notion.js           # Notion API client (with file upload)
 │   ├── sync.js             # Pipeline 1: Scriberr poll/sync worker
 │   ├── media-pipeline.js   # Pipeline 2: Orchestrator (inbox → download → transcribe → Notion)
-│   ├── groq-transcriber.js # Groq Whisper API client (cloud fallback)
+│   ├── telegram-bot.js     # Pipeline 3: Telegram mobile capture bot
+│   ├── groq-transcriber.js # Groq Whisper + LLM client (transcription + title generation)
 │   ├── media-downloader.js # yt-dlp wrapper
 │   ├── audio-extractor.js  # ffmpeg wrapper
 │   └── yt-transcript.js    # YouTube subtitle/transcript fetcher
