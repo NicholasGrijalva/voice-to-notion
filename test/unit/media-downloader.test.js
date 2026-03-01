@@ -1,11 +1,10 @@
-const { describe, it, expect, vi, beforeEach } = require('vitest') || global;
-
-// Mock dependencies
-vi.mock('fs');
-vi.mock('child_process');
-
 const fs = require('fs');
-const { execFile } = require('child_process');
+const child_process = require('child_process');
+
+// Spy on execFile at MODULE LEVEL before requiring source.
+// The source destructures: const { execFile } = require('child_process')
+// so the spy must exist before that require() runs.
+vi.spyOn(child_process, 'execFile');
 
 const MediaDownloader = require('../../src/media-downloader');
 const { SAMPLE_YT_METADATA } = require('../helpers/fixtures');
@@ -14,13 +13,24 @@ describe('MediaDownloader', () => {
   let downloader;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    fs.existsSync.mockReturnValue(true);
-    fs.mkdirSync.mockReturnValue(undefined);
-    fs.statSync.mockReturnValue({ size: 5000000 });
-    fs.readdirSync.mockReturnValue([]);
+    // Set up fs spies (source accesses fs.method() through the object, so
+    // spyOn works here -- no need for module-level unlike execFile).
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'statSync').mockReturnValue({ size: 5000000 });
+    vi.spyOn(fs, 'readdirSync').mockReturnValue([]);
 
     downloader = new MediaDownloader();
+  });
+
+  afterEach(() => {
+    // Restore only fs spies so they don't leak between tests.
+    // Do NOT use vi.restoreAllMocks() -- it would unwrap the
+    // module-level execFile spy and break subsequent tests.
+    fs.existsSync.mockRestore();
+    fs.mkdirSync.mockRestore();
+    fs.statSync.mockRestore();
+    fs.readdirSync.mockRestore();
   });
 
   describe('constructor', () => {
@@ -56,7 +66,7 @@ describe('MediaDownloader', () => {
     const mockMetadata = { ...SAMPLE_YT_METADATA };
 
     beforeEach(() => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      child_process.execFile.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify(mockMetadata), '');
       });
     });
@@ -64,7 +74,7 @@ describe('MediaDownloader', () => {
     it('should build correct yt-dlp args for audio-only download (default)', async () => {
       await downloader.download('https://youtube.com/watch?v=test');
 
-      const args = execFile.mock.calls[0][1];
+      const args = child_process.execFile.mock.calls[0][1];
       expect(args).toContain('--extract-audio');
       expect(args).toContain('--audio-format');
       expect(args).toContain('mp3');
@@ -76,7 +86,7 @@ describe('MediaDownloader', () => {
     it('should build correct yt-dlp args for video download', async () => {
       await downloader.download('https://youtube.com/watch?v=test', { audioOnly: false });
 
-      const args = execFile.mock.calls[0][1];
+      const args = child_process.execFile.mock.calls[0][1];
       expect(args).not.toContain('--extract-audio');
     });
 
@@ -101,17 +111,15 @@ describe('MediaDownloader', () => {
     });
 
     it('should fall back to metadata.ext path when expected path not found', async () => {
-      // First call (expected path) returns false, second (alt path) returns true
-      let callCount = 0;
+      // Use video mode so expectedExt='mp4' differs from metadata.ext='mp3'
+      // Expected path: dQw4w9WgXcQ.mp4 (not found) → alt path: dQw4w9WgXcQ.mp3 (found)
       fs.existsSync.mockImplementation((p) => {
-        callCount++;
-        if (p.endsWith('.mp3') && callCount <= 2) return false; // Expected path not found
-        if (p.endsWith('.mp3') && callCount > 2) return true;  // Alt path found
-        return true;
+        if (p.endsWith('.mp4')) return false; // Expected video ext not found
+        return true; // Alt path (metadata.ext = mp3) found
       });
 
-      const result = await downloader.download('https://youtube.com/watch?v=test');
-      expect(result.filePath).toBeDefined();
+      const result = await downloader.download('https://youtube.com/watch?v=test', { audioOnly: false });
+      expect(result.filePath).toContain('.mp3');
     });
 
     it('should search output directory for any matching file when both paths missing', async () => {
@@ -142,7 +150,7 @@ describe('MediaDownloader', () => {
         quality: '5',
       });
 
-      const args = execFile.mock.calls[0][1];
+      const args = child_process.execFile.mock.calls[0][1];
       expect(args).toContain('m4a');
       expect(args).toContain('5');
     });
@@ -192,19 +200,19 @@ describe('MediaDownloader', () => {
 
   describe('getMetadata()', () => {
     it('should call yt-dlp with --dump-json --no-download flags', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      child_process.execFile.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify(SAMPLE_YT_METADATA), '');
       });
 
       await downloader.getMetadata('https://youtube.com/watch?v=test');
 
-      const args = execFile.mock.calls[0][1];
+      const args = child_process.execFile.mock.calls[0][1];
       expect(args).toContain('--dump-json');
       expect(args).toContain('--no-download');
     });
 
     it('should parse and return JSON metadata', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      child_process.execFile.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify(SAMPLE_YT_METADATA), '');
       });
 
@@ -215,19 +223,19 @@ describe('MediaDownloader', () => {
 
   describe('listSubtitles()', () => {
     it('should call yt-dlp with --list-subs --skip-download flags', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      child_process.execFile.mockImplementation((cmd, args, opts, cb) => {
         cb(null, 'subtitle info', '');
       });
 
       await downloader.listSubtitles('https://youtube.com/watch?v=test');
 
-      const args = execFile.mock.calls[0][1];
+      const args = child_process.execFile.mock.calls[0][1];
       expect(args).toContain('--list-subs');
       expect(args).toContain('--skip-download');
     });
 
     it('should return stdout string on success', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      child_process.execFile.mockImplementation((cmd, args, opts, cb) => {
         cb(null, 'Available subtitles: en, fr', '');
       });
 
@@ -236,7 +244,7 @@ describe('MediaDownloader', () => {
     });
 
     it('should return null on error', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      child_process.execFile.mockImplementation((cmd, args, opts, cb) => {
         cb(new Error('no subs'), '', 'error');
       });
 
@@ -306,7 +314,7 @@ describe('MediaDownloader', () => {
 
   describe('exec()', () => {
     it('should resolve with trimmed stdout and stderr on success', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      child_process.execFile.mockImplementation((cmd, args, opts, cb) => {
         cb(null, '  output  \n', '  warnings  \n');
       });
 
@@ -316,7 +324,7 @@ describe('MediaDownloader', () => {
     });
 
     it('should reject with stderr message on error', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      child_process.execFile.mockImplementation((cmd, args, opts, cb) => {
         cb(new Error('failed'), '', 'yt-dlp: error details');
       });
 
@@ -325,7 +333,7 @@ describe('MediaDownloader', () => {
     });
 
     it('should reject with error.message when stderr is empty', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      child_process.execFile.mockImplementation((cmd, args, opts, cb) => {
         cb(new Error('signal killed'), '', '');
       });
 
@@ -334,7 +342,7 @@ describe('MediaDownloader', () => {
     });
 
     it('should set PYTHONUNBUFFERED env var', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      child_process.execFile.mockImplementation((cmd, args, opts, cb) => {
         expect(opts.env.PYTHONUNBUFFERED).toBe('1');
         cb(null, '{}', '');
       });

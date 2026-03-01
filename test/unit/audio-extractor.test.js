@@ -1,11 +1,10 @@
-const { describe, it, expect, vi, beforeEach } = require('vitest') || global;
-
-// Mock dependencies
-vi.mock('fs');
-vi.mock('child_process');
-
 const fs = require('fs');
-const { execFile } = require('child_process');
+const child_process = require('child_process');
+
+// Spy on execFile at MODULE LEVEL before requiring the source.
+// The source destructures: const { execFile } = require('child_process')
+// so it captures the reference at require-time. The spy must exist first.
+const execFileSpy = vi.spyOn(child_process, 'execFile');
 
 const AudioExtractor = require('../../src/audio-extractor');
 
@@ -13,14 +12,21 @@ describe('AudioExtractor', () => {
   let extractor;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-
-    // Default fs mocks
-    fs.existsSync.mockReturnValue(true);
-    fs.mkdirSync.mockReturnValue(undefined);
-    fs.statSync.mockReturnValue({ size: 5000000 });
+    // Set up fs spies (source accesses these through the fs object, so
+    // beforeEach timing is fine)
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'statSync').mockReturnValue({ size: 5000000 });
 
     extractor = new AudioExtractor();
+  });
+
+  afterEach(() => {
+    // Restore fs spies so they get re-created fresh in next beforeEach.
+    // Do NOT use vi.restoreAllMocks() as it would unwrap execFileSpy.
+    fs.existsSync.mockRestore();
+    fs.mkdirSync.mockRestore();
+    fs.statSync.mockRestore();
   });
 
   describe('constructor', () => {
@@ -63,7 +69,7 @@ describe('AudioExtractor', () => {
   describe('extract()', () => {
     beforeEach(() => {
       // Mock successful ffmpeg exec
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         if (cmd === 'ffmpeg') {
           cb(null, '', '');
         } else if (cmd === 'ffprobe') {
@@ -87,7 +93,7 @@ describe('AudioExtractor', () => {
     it('should build correct ffmpeg args with default options', async () => {
       await extractor.extract('/input/video.mp4');
 
-      const ffmpegCall = execFile.mock.calls.find(c => c[0] === 'ffmpeg');
+      const ffmpegCall = execFileSpy.mock.calls.find(c => c[0] === 'ffmpeg');
       const args = ffmpegCall[1];
 
       expect(args).toContain('-i');
@@ -103,7 +109,7 @@ describe('AudioExtractor', () => {
     it('should include -ac 1 flag when mono=true', async () => {
       await extractor.extract('/input/video.mp4', { mono: true });
 
-      const ffmpegCall = execFile.mock.calls.find(c => c[0] === 'ffmpeg');
+      const ffmpegCall = execFileSpy.mock.calls.find(c => c[0] === 'ffmpeg');
       const args = ffmpegCall[1];
 
       expect(args).toContain('-ac');
@@ -113,7 +119,7 @@ describe('AudioExtractor', () => {
     it('should include -ar flag when sampleRate provided', async () => {
       await extractor.extract('/input/video.mp4', { sampleRate: 16000 });
 
-      const ffmpegCall = execFile.mock.calls.find(c => c[0] === 'ffmpeg');
+      const ffmpegCall = execFileSpy.mock.calls.find(c => c[0] === 'ffmpeg');
       const args = ffmpegCall[1];
 
       expect(args).toContain('-ar');
@@ -123,7 +129,7 @@ describe('AudioExtractor', () => {
     it('should use custom outputFilename when provided', async () => {
       await extractor.extract('/input/video.mp4', { outputFilename: 'custom_name' });
 
-      const ffmpegCall = execFile.mock.calls.find(c => c[0] === 'ffmpeg');
+      const ffmpegCall = execFileSpy.mock.calls.find(c => c[0] === 'ffmpeg');
       const args = ffmpegCall[1];
       const outputPath = args[args.length - 1];
 
@@ -133,7 +139,7 @@ describe('AudioExtractor', () => {
     it('should derive output filename from input basename', async () => {
       await extractor.extract('/input/my_video.mp4');
 
-      const ffmpegCall = execFile.mock.calls.find(c => c[0] === 'ffmpeg');
+      const ffmpegCall = execFileSpy.mock.calls.find(c => c[0] === 'ffmpeg');
       const args = ffmpegCall[1];
       const outputPath = args[args.length - 1];
 
@@ -154,7 +160,7 @@ describe('AudioExtractor', () => {
 
   describe('getDuration()', () => {
     it('should call ffprobe and parse duration from JSON output', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify({ format: { duration: '185.5' } }), '');
       });
 
@@ -163,7 +169,7 @@ describe('AudioExtractor', () => {
     });
 
     it('should return 0 when ffprobe fails', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(new Error('ffprobe error'), '', 'error');
       });
 
@@ -172,7 +178,7 @@ describe('AudioExtractor', () => {
     });
 
     it('should return 0 when duration field is missing', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify({ format: {} }), '');
       });
 
@@ -183,7 +189,7 @@ describe('AudioExtractor', () => {
 
   describe('getInfo()', () => {
     it('should identify audio-only files', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify({
           format: { duration: '120', size: '5000000', bit_rate: '192000' },
           streams: [
@@ -201,7 +207,7 @@ describe('AudioExtractor', () => {
     });
 
     it('should identify video files with both streams', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify({
           format: { duration: '300', size: '50000000', bit_rate: '1500000' },
           streams: [
@@ -220,7 +226,7 @@ describe('AudioExtractor', () => {
     });
 
     it('should return null for codec fields when stream not present', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify({
           format: { duration: '120', size: '5000000' },
           streams: []
@@ -236,7 +242,7 @@ describe('AudioExtractor', () => {
     });
 
     it('should parse sampleRate, channels, bitrate as integers', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify({
           format: { duration: '120', size: '5000000', bit_rate: '192000' },
           streams: [
@@ -255,7 +261,7 @@ describe('AudioExtractor', () => {
 
   describe('isAudioOnly()', () => {
     it('should return true for audio-only files', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify({
           format: { duration: '120', size: '5000000' },
           streams: [
@@ -269,7 +275,7 @@ describe('AudioExtractor', () => {
     });
 
     it('should return false for files with video stream', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(null, JSON.stringify({
           format: { duration: '300', size: '50000000' },
           streams: [
@@ -356,7 +362,7 @@ describe('AudioExtractor', () => {
 
   describe('exec()', () => {
     it('should resolve with trimmed stdout and stderr on success', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(null, '  output  \n', '  warnings  \n');
       });
 
@@ -366,7 +372,7 @@ describe('AudioExtractor', () => {
     });
 
     it('should reject with descriptive error including command name', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(new Error('command failed'), '', 'detailed error');
       });
 
@@ -375,7 +381,7 @@ describe('AudioExtractor', () => {
     });
 
     it('should use error.message when stderr is empty', async () => {
-      execFile.mockImplementation((cmd, args, opts, cb) => {
+      execFileSpy.mockImplementation((cmd, args, opts, cb) => {
         cb(new Error('signal killed'), '', '');
       });
 

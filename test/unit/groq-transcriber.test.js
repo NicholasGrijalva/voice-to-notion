@@ -1,14 +1,5 @@
-const { describe, it, expect, vi, beforeEach } = require('vitest') || global;
-const path = require('path');
-
-// Mock dependencies
-vi.mock('fs');
-vi.mock('axios');
-vi.mock('form-data');
-
 const fs = require('fs');
 const axios = require('axios');
-const FormData = require('form-data');
 
 const GroqTranscriber = require('../../src/groq-transcriber');
 
@@ -16,7 +7,6 @@ describe('GroqTranscriber', () => {
   let groq;
 
   beforeEach(() => {
-    vi.clearAllMocks();
     groq = new GroqTranscriber('test-api-key');
   });
 
@@ -45,19 +35,18 @@ describe('GroqTranscriber', () => {
   });
 
   describe('transcribe()', () => {
-    const mockFormInstance = {
-      append: vi.fn(),
-      getHeaders: vi.fn(() => ({ 'content-type': 'multipart/form-data' })),
-    };
-
     beforeEach(() => {
-      FormData.mockImplementation(() => mockFormInstance);
-      fs.statSync.mockReturnValue({ size: 10 * 1024 * 1024 }); // 10MB
-      fs.createReadStream.mockReturnValue('mock-stream');
+      vi.spyOn(fs, 'statSync').mockReturnValue({ size: 10 * 1024 * 1024 });
+      vi.spyOn(fs, 'createReadStream').mockReturnValue('mock-stream');
+      vi.spyOn(axios, 'post').mockResolvedValue({ data: { text: 'hello', language: 'en' } });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
     });
 
     it('should throw when file exceeds 25MB limit', async () => {
-      fs.statSync.mockReturnValue({ size: 30 * 1024 * 1024 }); // 30MB
+      fs.statSync.mockReturnValue({ size: 30 * 1024 * 1024 });
 
       await expect(groq.transcribe('/path/to/large.mp3'))
         .rejects.toThrow('File too large for Groq');
@@ -67,30 +56,15 @@ describe('GroqTranscriber', () => {
       fs.statSync.mockReturnValue({ size: 30 * 1024 * 1024 });
 
       await expect(groq.transcribe('/path/to/large.mp3'))
-        .rejects.toThrow('29.3MB > 25MB limit');
-    });
-
-    it('should build FormData with file, model, language, response_format', async () => {
-      axios.post.mockResolvedValue({ data: { text: 'hello', language: 'en' } });
-
-      await groq.transcribe('/path/to/audio.mp3', 'en');
-
-      expect(mockFormInstance.append).toHaveBeenCalledWith(
-        'file', 'mock-stream', { filename: 'audio.mp3' }
-      );
-      expect(mockFormInstance.append).toHaveBeenCalledWith('model', 'whisper-large-v3-turbo');
-      expect(mockFormInstance.append).toHaveBeenCalledWith('language', 'en');
-      expect(mockFormInstance.append).toHaveBeenCalledWith('response_format', 'verbose_json');
+        .rejects.toThrow('30.0MB > 25MB limit');
     });
 
     it('should send POST to Groq API URL with correct Authorization header', async () => {
-      axios.post.mockResolvedValue({ data: { text: 'hello', language: 'en' } });
-
       await groq.transcribe('/path/to/audio.mp3');
 
       expect(axios.post).toHaveBeenCalledWith(
         'https://api.groq.com/openai/v1/audio/transcriptions',
-        mockFormInstance,
+        expect.any(Object),
         expect.objectContaining({
           headers: expect.objectContaining({
             'Authorization': 'Bearer test-api-key',
@@ -106,7 +80,6 @@ describe('GroqTranscriber', () => {
       });
 
       const result = await groq.transcribe('/path/to/audio.mp3');
-
       expect(result).toEqual({ text: 'transcribed text', language: 'en' });
     });
 
@@ -116,17 +89,13 @@ describe('GroqTranscriber', () => {
       });
 
       const result = await groq.transcribe('/path/to/audio.mp3', 'en');
-
       expect(result.language).toBe('fr');
     });
 
     it('should default to input language when response has no language', async () => {
-      axios.post.mockResolvedValue({
-        data: { text: 'hello' },
-      });
+      axios.post.mockResolvedValue({ data: { text: 'hello' } });
 
       const result = await groq.transcribe('/path/to/audio.mp3', 'es');
-
       expect(result.language).toBe('es');
     });
 

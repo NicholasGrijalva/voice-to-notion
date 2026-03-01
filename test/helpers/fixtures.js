@@ -58,10 +58,10 @@ Language: en
 Hello world
 
 00:00:02.500 --> 00:00:05.000
-This is a <b>test</b> transcript
+Hello world
 
 00:00:05.000 --> 00:00:07.500
-Hello world
+This is a <b>test</b> transcript
 
 00:00:07.500 --> 00:00:10.000
 With some duplicate lines`;

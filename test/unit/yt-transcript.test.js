@@ -1,11 +1,12 @@
-const { describe, it, expect, vi, beforeEach } = require('vitest') || global;
-
-// Mock dependencies
-vi.mock('fs');
-vi.mock('child_process');
-
 const fs = require('fs');
-const { execFile } = require('child_process');
+const child_process = require('child_process');
+
+// Set up execFile spy at MODULE LEVEL before requiring the source.
+// The source destructures: const { execFile } = require('child_process')
+// so it captures a reference to child_process.execFile at require-time.
+// By spying before the require, the source gets the spy function.
+vi.spyOn(child_process, 'execFile');
+const execFile = child_process.execFile;
 
 const YouTubeTranscript = require('../../src/yt-transcript');
 const { SAMPLE_VTT_CONTENT, SAMPLE_SRT_CONTENT } = require('../helpers/fixtures');
@@ -14,11 +15,25 @@ describe('YouTubeTranscript', () => {
   let yt;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    fs.existsSync.mockReturnValue(true);
-    fs.mkdirSync.mockReturnValue(undefined);
+    // Spy on fs methods used by the source (accessed via fs.method())
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'readdirSync').mockReturnValue([]);
+    vi.spyOn(fs, 'readFileSync').mockReturnValue('');
+    vi.spyOn(fs, 'unlinkSync').mockReturnValue(undefined);
 
     yt = new YouTubeTranscript();
+  });
+
+  afterEach(() => {
+    // Only restore fs spies (they are set up fresh each beforeEach).
+    // Do NOT call vi.restoreAllMocks() as it would unwrap the
+    // module-level execFile spy and break subsequent tests.
+    fs.existsSync.mockRestore();
+    fs.mkdirSync.mockRestore();
+    fs.readdirSync.mockRestore();
+    fs.readFileSync.mockRestore();
+    fs.unlinkSync.mockRestore();
   });
 
   describe('constructor', () => {
