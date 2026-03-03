@@ -1,10 +1,13 @@
 /**
  * Telegram Bot - Mobile capture layer for voice-to-notion
  *
- * Receives URLs, voice notes, audio, and video via Telegram
+ * Receives URLs, voice notes, audio, video, and photos via Telegram
  * and routes them through the existing MediaPipeline to Notion.
  *
- * Uses long-polling (no webhook/SSL/port exposure needed).
+ * Features:
+ * - Photo OCR via Gemini 2.5 Flash
+ * - Reply chain: reply to any message with voice/text to append "My Take"
+ * - Long-polling (no webhook/SSL/port exposure needed)
  */
 
 const { Telegraf } = require('telegraf');
@@ -12,6 +15,7 @@ const { message } = require('telegraf/filters');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { ocrImage } = require('./ocr');
 
 const URL_REGEX = /https?:\/\/[^\s]+/g;
 
@@ -27,8 +31,13 @@ class TelegramBot {
     this.bot = new Telegraf(token);
     this.allowedUsers = this.parseAllowedUsers();
 
+    // Reply chain: track messages that created Notion pages
+    // message_id -> { pageId, timestamp }
+    this.pendingSources = new Map();
+
     this.ensureDir(this.tempDir);
     this.registerHandlers();
+    this.startCleanupTimer();
   }
 
   parseAllowedUsers() {
@@ -54,10 +63,14 @@ class TelegramBot {
 
     // /start command
     this.bot.start((ctx) => {
-      ctx.reply('Send me URLs, voice notes, or media files. I\'ll transcribe and save to Notion.');
+      ctx.reply(
+        'Send me URLs, voice notes, photos, or media files.\n' +
+        'I\'ll transcribe/OCR and save to Notion.\n\n' +
+        'Reply to any message with voice or text to add your take.'
+      );
     });
 
-    // Text messages (extract URLs)
+    // Text messages (extract URLs, or reply chain)
     this.bot.on(message('text'), (ctx) => this.handleText(ctx));
 
     // Voice messages
@@ -72,22 +85,144 @@ class TelegramBot {
     // Video notes (round video messages)
     this.bot.on(message('video_note'), (ctx) => this.handleFile(ctx, 'video_note'));
 
-    // Documents (check if media)
+    // Photo messages (OCR)
+    this.bot.on(message('photo'), (ctx) => this.handlePhoto(ctx));
+
+    // Documents (check if media or image)
     this.bot.on(message('document'), (ctx) => this.handleDocument(ctx));
   }
 
+  // ─── Reply Chain ───────────────────────────────────────────────────────────
+
+  /**
+   * Check if this message is a reply to a tracked source.
+   * Returns true if handled as reply chain, false otherwise.
+   */
+  async checkReplyChain(ctx) {
+    const replyTo = ctx.message?.reply_to_message;
+    if (!replyTo || !this.pendingSources.has(replyTo.message_id)) {
+      return false;
+    }
+    await this.handleReplyChain(ctx, replyTo.message_id);
+    return true;
+  }
+
+  /**
+   * Handle a reply to a tracked source: transcribe/extract text,
+   * then append "My Take" section to the existing Notion page.
+   */
+  async handleReplyChain(ctx, originalMessageId) {
+    const { pageId } = this.pendingSources.get(originalMessageId);
+    const status = await ctx.reply('Adding your take...');
+    let tempPath = null;
+
+    try {
+      let replyText = '';
+
+      if (ctx.message.voice || ctx.message.audio) {
+        // Voice/audio reply: transcribe without creating Notion page
+        const fileObj = ctx.message.voice || ctx.message.audio;
+        tempPath = await this.downloadTelegramFile(ctx, fileObj.file_id, 'voice');
+        const result = await this.pipeline.ingestFile(tempPath, {
+          title: 'reply',
+          skipNotion: true,
+        });
+        replyText = result.transcript;
+      } else if (ctx.message.text) {
+        replyText = ctx.message.text;
+      } else if (ctx.message.photo) {
+        // Photo reply: OCR the image and append as text
+        const photos = ctx.message.photo;
+        const largest = photos[photos.length - 1];
+        tempPath = await this.downloadTelegramFile(ctx, largest.file_id, 'photo');
+        replyText = await ocrImage(tempPath);
+      }
+
+      if (!replyText) {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          'Could not extract content from your reply.'
+        );
+        return;
+      }
+
+      // Append "My Take" section to existing Notion page
+      const blocks = [
+        { object: 'block', type: 'divider', divider: {} },
+        {
+          object: 'block',
+          type: 'heading_2',
+          heading_2: {
+            rich_text: [{ type: 'text', text: { content: 'My Take' } }],
+          },
+        },
+        ...this.notion.splitText(replyText, 1900).map(chunk => ({
+          object: 'block',
+          type: 'paragraph',
+          paragraph: {
+            rich_text: [{ type: 'text', text: { content: chunk } }],
+          },
+        })),
+      ];
+
+      await this.notion.appendBlocks(pageId, blocks);
+      this.pendingSources.delete(originalMessageId);
+
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, status.message_id, null,
+        'Added your take to the page.'
+      );
+    } catch (error) {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, status.message_id, null,
+        `Failed to add take: ${error.message}`
+      );
+    } finally {
+      this.cleanup(tempPath);
+    }
+  }
+
+  /**
+   * Track a message that created a Notion page (for reply chain).
+   */
+  trackSource(messageId, pageId) {
+    this.pendingSources.set(messageId, { pageId, timestamp: Date.now() });
+  }
+
+  /**
+   * Clean up expired pending sources every 5 minutes.
+   * Pages are already created, so expiry just stops tracking.
+   */
+  startCleanupTimer() {
+    this.cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      const TTL = 30 * 60 * 1000; // 30 minutes
+      for (const [msgId, { timestamp }] of this.pendingSources) {
+        if (now - timestamp > TTL) {
+          this.pendingSources.delete(msgId);
+        }
+      }
+    }, 5 * 60 * 1000);
+  }
+
+  // ─── Message Handlers ─────────────────────────────────────────────────────
+
   async handleText(ctx) {
+    // Check reply chain first
+    if (await this.checkReplyChain(ctx)) return;
+
     const text = ctx.message.text;
     const urls = text.match(URL_REGEX);
 
     if (!urls || urls.length === 0) {
-      return ctx.reply('No URLs found. Send a link, voice note, or media file.');
+      return ctx.reply('No URLs found. Send a link, voice note, photo, or media file.');
     }
 
     for (const url of urls) {
       const status = await ctx.reply(`Processing: ${url}`);
       try {
         const result = await this.pipeline.ingest(url);
+        this.trackSource(ctx.message.message_id, result.pageId);
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
           `Done: ${result.title}\n${result.notionUrl}`
@@ -98,6 +233,53 @@ class TelegramBot {
           `Failed: ${error.message}`
         );
       }
+    }
+  }
+
+  async handlePhoto(ctx) {
+    // Check reply chain first
+    if (await this.checkReplyChain(ctx)) return;
+
+    const photos = ctx.message.photo;
+    const largest = photos[photos.length - 1]; // highest resolution
+
+    // Telegram Bot API limit: 20MB
+    if (largest.file_size && largest.file_size > 20 * 1024 * 1024) {
+      return ctx.reply('Image too large (>20MB).');
+    }
+
+    const status = await ctx.reply('Processing image (OCR)...');
+    let tempPath = null;
+
+    try {
+      tempPath = await this.downloadTelegramFile(ctx, largest.file_id, 'photo');
+      const ocrText = await ocrImage(tempPath);
+
+      // Use first line of OCR as title, fallback to timestamp
+      const firstLine = ocrText.split('\n')[0].replace(/^#+\s*/, '').trim();
+      const title = firstLine.slice(0, 80) || `Image ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
+
+      const pageId = await this.notion.createTranscriptPage({
+        title,
+        transcript: ocrText,
+        source: 'Idea',
+        metadata: {},
+      });
+
+      this.trackSource(ctx.message.message_id, pageId);
+
+      const notionUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, status.message_id, null,
+        `Done: ${title}\n${notionUrl}`
+      );
+    } catch (error) {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, status.message_id, null,
+        `Failed: ${error.message}`
+      );
+    } finally {
+      this.cleanup(tempPath);
     }
   }
 
@@ -117,6 +299,9 @@ class TelegramBot {
   }
 
   async handleFile(ctx, type) {
+    // Check reply chain first
+    if (await this.checkReplyChain(ctx)) return;
+
     let fileObj;
     if (type === 'voice') fileObj = ctx.message.voice;
     else if (type === 'audio') fileObj = ctx.message.audio;
@@ -137,6 +322,7 @@ class TelegramBot {
     try {
       tempPath = await this.downloadTelegramFile(ctx, fileObj.file_id, type);
       const result = await this.pipeline.ingestFile(tempPath, { title });
+      this.trackSource(ctx.message.message_id, result.pageId);
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
         `Done: ${result.title}\n${result.notionUrl}`
@@ -152,13 +338,60 @@ class TelegramBot {
   }
 
   async handleDocument(ctx) {
+    // Check reply chain first
+    if (await this.checkReplyChain(ctx)) return;
+
     const doc = ctx.message.document;
     if (!doc) return;
 
-    // Only process media files
+    // Accept media files and image files
     const mediaExts = /\.(mp3|mp4|m4a|mov|wav|flac|ogg|opus|webm|mkv|avi|m4v|aac|wma)$/i;
+    const imageExts = /\.(jpg|jpeg|png|webp|heic)$/i;
+
+    if (imageExts.test(doc.file_name || '')) {
+      // Route image documents through photo/OCR handler
+      if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
+        return ctx.reply('Image too large (>20MB).');
+      }
+
+      const status = await ctx.reply(`Processing image: ${doc.file_name}`);
+      let tempPath = null;
+
+      try {
+        tempPath = await this.downloadTelegramFile(ctx, doc.file_id, 'photo', doc.file_name);
+        const ocrText = await ocrImage(tempPath);
+
+        const firstLine = ocrText.split('\n')[0].replace(/^#+\s*/, '').trim();
+        const title = firstLine.slice(0, 80) || doc.file_name.replace(/\.[^/.]+$/, '');
+
+        const pageId = await this.notion.createTranscriptPage({
+          title,
+          transcript: ocrText,
+          source: 'Idea',
+          sourceFilename: doc.file_name,
+          metadata: {},
+        });
+
+        this.trackSource(ctx.message.message_id, pageId);
+
+        const notionUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          `Done: ${title}\n${notionUrl}`
+        );
+      } catch (error) {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          `Failed: ${error.message}`
+        );
+      } finally {
+        this.cleanup(tempPath);
+      }
+      return;
+    }
+
     if (!mediaExts.test(doc.file_name || '')) {
-      return ctx.reply(`Unsupported file type: ${doc.file_name}. Send media files or URLs.`);
+      return ctx.reply(`Unsupported file type: ${doc.file_name}. Send media files, images, or URLs.`);
     }
 
     if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
@@ -172,6 +405,7 @@ class TelegramBot {
     try {
       tempPath = await this.downloadTelegramFile(ctx, doc.file_id, 'document', doc.file_name);
       const result = await this.pipeline.ingestFile(tempPath, { title });
+      this.trackSource(ctx.message.message_id, result.pageId);
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
         `Done: ${result.title}\n${result.notionUrl}`
@@ -185,6 +419,8 @@ class TelegramBot {
       this.cleanup(tempPath);
     }
   }
+
+  // ─── Utilities ─────────────────────────────────────────────────────────────
 
   /**
    * Download a file from Telegram to a temp path
@@ -200,6 +436,8 @@ class TelegramBot {
       ext = '.ogg'; // Telegram voice messages are opus in ogg
     } else if (type === 'video' || type === 'video_note') {
       ext = '.mp4';
+    } else if (type === 'photo') {
+      ext = '.jpg';
     } else {
       ext = '.mp3';
     }
@@ -243,10 +481,11 @@ class TelegramBot {
     }
 
     this.bot.launch();
-    console.log('[TelegramBot] Running');
+    console.log('[TelegramBot] Running (photo OCR + reply chain enabled)');
   }
 
   stop() {
+    if (this.cleanupInterval) clearInterval(this.cleanupInterval);
     this.bot.stop('shutdown');
   }
 }

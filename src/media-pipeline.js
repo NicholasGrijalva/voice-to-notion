@@ -278,6 +278,7 @@ class MediaPipeline {
    * @param {string} filePath - Absolute path to the media file
    * @param {Object} opts - Optional overrides
    * @param {string} opts.title - Override title (instead of deriving from filename)
+   * @param {boolean} opts.skipNotion - If true, only transcribe and return { transcript, title } without creating Notion page
    * @returns {Promise<{pageId: string, title: string}>}
    */
   async ingestFile(filePath, opts = {}) {
@@ -320,6 +321,11 @@ class MediaPipeline {
         transcript = await this.transcribeViaScriberr(audioPath, filename);
       } else {
         transcript = { text: '[Transcription not available — no Scriberr configured]', language: 'en' };
+      }
+
+      // Early return for skipNotion mode (used by reply chain)
+      if (opts.skipNotion) {
+        return { transcript: transcript.text, title, language: transcript.language || 'en' };
       }
 
       // Step 3: Generate title from transcript if we don't have a good one
