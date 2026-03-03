@@ -24,7 +24,9 @@ docker compose logs -f notion-worker
 
 ## Features
 
-- **Telegram bot** — send URLs, voice notes, or media from your phone; get Notion pages back
+- **Telegram bot** — send URLs, voice notes, photos, or media from your phone; get Notion pages back
+- **Photo OCR** — send photos/screenshots; Gemini 2.5 Flash extracts text into Notion pages
+- **Reply chain** — reply to any captured message with voice/text to append a "My Take" annotation
 - **Auto-generated titles** — Groq LLM summarizes transcripts into descriptive page titles
 - **Local transcription** via Scriberr (WhisperX)
 - **Cloud transcription** via Groq Whisper API (optional, ~164x real-time)
@@ -79,13 +81,25 @@ Pipeline 3: Telegram Bot (mobile capture)
 │  Telegram    │────▶│  Download   │────▶│ Groq/Scrib. │────▶│   Notion    │
 │ (URL/voice)  │     │  + ffmpeg   │     │ (Whisper)   │     │  Database   │
 └─────────────┘     └─────────────┘     └──────┬──────┘     └─────────────┘
-                                               │
-                                        ┌──────┴──────┐
-                                        │  Groq LLM   │ auto-generates title
-                                        └─────────────┘
+       │                                       │
+       │ photo                          ┌──────┴──────┐
+       ▼                                │  Groq LLM   │ auto-generates title
+┌─────────────┐                         └─────────────┘
+│ Gemini 2.5  │ OCR
+│   Flash     │────────────────────────────────▶ Notion
+└─────────────┘
+
+Pipeline 4: Reply Chain (annotation layer)
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│ Reply to any │────▶│ Transcribe  │────▶│  Append     │
+│ bot message  │     │ or extract  │     │ "My Take"   │
+│ with voice/  │     │ text        │     │ to existing │
+│ text/photo   │     │             │     │ Notion page │
+└─────────────┘     └─────────────┘     └─────────────┘
 
 Transcription routing: Groq (if GROQ_API_KEY set, <25MB) → Scriberr (local fallback)
 Title generation: Groq LLM (llama-3.3-70b) generates titles from transcript content
+OCR: Gemini 2.5 Flash (requires GEMINI_API_KEY)
 ```
 
 ## Setup
@@ -147,7 +161,15 @@ The worker auto-registers on first boot (fresh Scriberr install) and logs in on 
 
 The bot uses long-polling (no webhooks, no SSL, no exposed ports needed).
 
-### 5. Start Everything
+### 5. Gemini API Key (optional — photo OCR)
+
+1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+2. Create an API key
+3. Add to `.env`: `GEMINI_API_KEY=AIza...`
+
+Required only if you want to send photos/screenshots to the bot for OCR. All other features work without it.
+
+### 6. Start Everything
 
 ```bash
 # Option A: Boot script (handles sequencing and health checks)
@@ -167,7 +189,11 @@ Send any of these to your bot:
 - **Voice message** — transcribes, generates AI title from content
 - **Video message** — extracts audio, transcribes, generates AI title
 - **Audio/video file** — same pipeline as voice messages
+- **Photo/screenshot** — OCR via Gemini 2.5 Flash, creates Notion page as "Idea"
+- **Image file** (.jpg, .png, .webp, .heic sent as document) — same as photo
 - **Multiple URLs in one message** — processes each one sequentially
+
+**Reply chain:** Reply to any bot-processed message with voice, text, or a photo to append a "My Take" section to the existing Notion page. This lets you capture a source (image, URL, video) and then add your reaction/annotation without creating a separate page.
 
 The bot replies with a link to the created Notion page.
 
@@ -310,6 +336,7 @@ All config is in `.env`:
 | `MEDIA_PROCESSED_PATH` | Host path for processed files | ./processed |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather | (optional) |
 | `TELEGRAM_ALLOWED_USERS` | Comma-separated Telegram user IDs | (optional) |
+| `GEMINI_API_KEY` | Google Gemini API key for photo OCR | (optional) |
 
 ## Troubleshooting
 
@@ -388,7 +415,8 @@ voice-to-notion/
 │   ├── notion.js           # Notion API client (with file upload)
 │   ├── sync.js             # Pipeline 1: Scriberr poll/sync worker
 │   ├── media-pipeline.js   # Pipeline 2: Orchestrator (inbox → download → transcribe → Notion)
-│   ├── telegram-bot.js     # Pipeline 3: Telegram mobile capture bot
+│   ├── telegram-bot.js     # Pipeline 3: Telegram mobile capture (photo OCR + reply chain)
+│   ├── ocr.js              # Gemini 2.5 Flash image OCR
 │   ├── groq-transcriber.js # Groq Whisper + LLM client (transcription + title generation)
 │   ├── media-downloader.js # yt-dlp wrapper
 │   ├── audio-extractor.js  # ffmpeg wrapper
