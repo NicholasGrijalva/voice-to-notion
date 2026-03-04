@@ -15,7 +15,7 @@ const { message } = require('telegraf/filters');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { ocrImage } = require('./ocr');
+const ocr = require('./ocr');
 
 const URL_REGEX = /https?:\/\/[^\s]+/g;
 
@@ -118,6 +118,7 @@ class TelegramBot {
 
     try {
       let replyText = '';
+      let replyImageUploadId = null;
 
       if (ctx.message.voice || ctx.message.audio) {
         // Voice/audio reply: transcribe without creating Notion page
@@ -131,11 +132,18 @@ class TelegramBot {
       } else if (ctx.message.text) {
         replyText = ctx.message.text;
       } else if (ctx.message.photo) {
-        // Photo reply: OCR the image and append as text
+        // Photo reply: OCR the image and upload it
         const photos = ctx.message.photo;
         const largest = photos[photos.length - 1];
         tempPath = await this.downloadTelegramFile(ctx, largest.file_id, 'photo');
-        replyText = await ocrImage(tempPath);
+        replyText = await ocr.ocrImage(tempPath);
+
+        try {
+          const filename = `reply-photo-${Date.now()}${path.extname(tempPath)}`;
+          replyImageUploadId = await this.notion.uploadFile(tempPath, filename, this.getImageMimeType(tempPath));
+        } catch (err) {
+          console.warn('[TelegramBot] Reply image upload failed:', err.message);
+        }
       }
 
       if (!replyText) {
@@ -156,21 +164,38 @@ class TelegramBot {
             rich_text: [{ type: 'text', text: { content: 'My Take' } }],
           },
         },
+      ];
+
+      if (replyImageUploadId) {
+        blocks.push({
+          object: 'block',
+          type: 'image',
+          image: {
+            type: 'file_upload',
+            file_upload: { id: replyImageUploadId }
+          }
+        });
+      }
+
+      blocks.push(
         ...this.notion.splitText(replyText, 1900).map(chunk => ({
           object: 'block',
           type: 'paragraph',
           paragraph: {
             rich_text: [{ type: 'text', text: { content: chunk } }],
           },
-        })),
-      ];
+        }))
+      );
 
       await this.notion.appendBlocks(pageId, blocks);
       this.pendingSources.delete(originalMessageId);
 
+      const takeMsg = replyImageUploadId === null && ctx.message.photo
+        ? 'Added your take to the page (image upload failed).'
+        : 'Added your take to the page.';
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
-        'Added your take to the page.'
+        takeMsg
       );
     } catch (error) {
       await ctx.telegram.editMessageText(
@@ -253,25 +278,36 @@ class TelegramBot {
 
     try {
       tempPath = await this.downloadTelegramFile(ctx, largest.file_id, 'photo');
-      const ocrText = await ocrImage(tempPath);
+      const ocrText = await ocr.ocrImage(tempPath);
 
       // Use first line of OCR as title, fallback to timestamp
       const firstLine = ocrText.split('\n')[0].replace(/^#+\s*/, '').trim();
       const title = firstLine.slice(0, 80) || `Image ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
 
+      // Upload original image to Notion
+      let imageFileUploadId = null;
+      try {
+        const filename = `photo-${Date.now()}${path.extname(tempPath)}`;
+        imageFileUploadId = await this.notion.uploadFile(tempPath, filename, this.getImageMimeType(tempPath));
+      } catch (err) {
+        console.warn('[TelegramBot] Image upload to Notion failed:', err.message);
+      }
+
       const pageId = await this.notion.createTranscriptPage({
         title,
         transcript: ocrText,
         source: 'Idea',
+        imageFileUploadId,
         metadata: {},
       });
 
       this.trackSource(ctx.message.message_id, pageId);
 
       const notionUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
+      const prefix = imageFileUploadId ? 'Done' : 'Done (image upload failed)';
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
-        `Done: ${title}\n${notionUrl}`
+        `${prefix}: ${title}\n${notionUrl}`
       );
     } catch (error) {
       await ctx.telegram.editMessageText(
@@ -359,25 +395,35 @@ class TelegramBot {
 
       try {
         tempPath = await this.downloadTelegramFile(ctx, doc.file_id, 'photo', doc.file_name);
-        const ocrText = await ocrImage(tempPath);
+        const ocrText = await ocr.ocrImage(tempPath);
 
         const firstLine = ocrText.split('\n')[0].replace(/^#+\s*/, '').trim();
         const title = firstLine.slice(0, 80) || doc.file_name.replace(/\.[^/.]+$/, '');
+
+        // Upload original image to Notion
+        let imageFileUploadId = null;
+        try {
+          imageFileUploadId = await this.notion.uploadFile(tempPath, doc.file_name, this.getImageMimeType(tempPath));
+        } catch (err) {
+          console.warn('[TelegramBot] Image upload to Notion failed:', err.message);
+        }
 
         const pageId = await this.notion.createTranscriptPage({
           title,
           transcript: ocrText,
           source: 'Idea',
           sourceFilename: doc.file_name,
+          imageFileUploadId,
           metadata: {},
         });
 
         this.trackSource(ctx.message.message_id, pageId);
 
         const notionUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
+        const prefix = imageFileUploadId ? 'Done' : 'Done (image upload failed)';
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
-          `Done: ${title}\n${notionUrl}`
+          `${prefix}: ${title}\n${notionUrl}`
         );
       } catch (error) {
         await ctx.telegram.editMessageText(
@@ -470,6 +516,11 @@ class TelegramBot {
         fs.unlinkSync(filePath);
       }
     } catch {}
+  }
+
+  getImageMimeType(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    return ocr.MIME_TYPES[ext] || 'image/jpeg';
   }
 
   async start() {

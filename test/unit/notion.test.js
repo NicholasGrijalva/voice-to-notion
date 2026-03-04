@@ -293,6 +293,71 @@ describe('NotionClient', () => {
       expect(audioBlocks).toHaveLength(0);
     });
 
+    it('should prepend image block when imageFileUploadId provided', async () => {
+      await notion.createTranscriptPage({
+        title: 'Test',
+        transcript: 'text',
+        imageFileUploadId: 'img-upload-123',
+      });
+
+      const call = mockClient.post.mock.calls[0];
+      const imageBlocks = call[1].children.filter(b => b.type === 'image');
+      expect(imageBlocks).toHaveLength(1);
+      expect(imageBlocks[0].image.file_upload.id).toBe('img-upload-123');
+    });
+
+    it('should prepend heading_2 with title when imageFileUploadId provided', async () => {
+      await notion.createTranscriptPage({
+        title: 'Shopping List',
+        transcript: 'text',
+        imageFileUploadId: 'img-upload-123',
+      });
+
+      const call = mockClient.post.mock.calls[0];
+      const headings = call[1].children.filter(b => b.type === 'heading_2');
+      expect(headings).toHaveLength(1);
+      expect(headings[0].heading_2.rich_text[0].text.content).toBe('Shopping List');
+    });
+
+    it('should order children as heading_2, image, paragraphs when imageFileUploadId provided', async () => {
+      await notion.createTranscriptPage({
+        title: 'Test',
+        transcript: 'OCR text',
+        imageFileUploadId: 'img-upload-123',
+      });
+
+      const call = mockClient.post.mock.calls[0];
+      const types = call[1].children.map(b => b.type);
+      expect(types[0]).toBe('heading_2');
+      expect(types[1]).toBe('image');
+      expect(types[2]).toBe('paragraph');
+    });
+
+    it('should not include image or heading_2 blocks when imageFileUploadId is null', async () => {
+      await notion.createTranscriptPage({
+        title: 'Test',
+        transcript: 'text',
+        imageFileUploadId: null,
+      });
+
+      const call = mockClient.post.mock.calls[0];
+      expect(call[1].children.filter(b => b.type === 'image')).toHaveLength(0);
+      expect(call[1].children.filter(b => b.type === 'heading_2')).toHaveLength(0);
+    });
+
+    it('should truncate image heading title to 2000 chars', async () => {
+      const longTitle = 'a'.repeat(3000);
+      await notion.createTranscriptPage({
+        title: longTitle,
+        transcript: 'text',
+        imageFileUploadId: 'img-upload-123',
+      });
+
+      const call = mockClient.post.mock.calls[0];
+      const heading = call[1].children.find(b => b.type === 'heading_2');
+      expect(heading.heading_2.rich_text[0].text.content.length).toBe(2000);
+    });
+
     it('should prepend callout block with metadata', async () => {
       await notion.createTranscriptPage({
         title: 'Test',

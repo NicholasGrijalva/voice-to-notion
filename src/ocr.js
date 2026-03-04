@@ -45,4 +45,4 @@ async function ocrImage(imagePath) {
   return text.trim();
 }
 
-module.exports = { ocrImage };
+module.exports = { ocrImage, MIME_TYPES };

@@ -25,7 +25,7 @@ docker compose logs -f notion-worker
 ## Features
 
 - **Telegram bot** — send URLs, voice notes, photos, or media from your phone; get Notion pages back
-- **Photo OCR** — send photos/screenshots; Gemini 2.5 Flash extracts text into Notion pages
+- **Photo OCR** — send photos/screenshots; Gemini 2.5 Flash extracts text, embeds original image + transcription in Notion pages
 - **Reply chain** — reply to any captured message with voice/text to append a "My Take" annotation
 - **Auto-generated titles** — Groq LLM summarizes transcripts into descriptive page titles
 - **Local transcription** via Scriberr (WhisperX)

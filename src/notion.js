@@ -164,10 +164,11 @@ class NotionClient {
    * @param {string|null} options.sourceFilename - Original filename
    * @param {string|null} options.sourceRef - Source reference (filepath or URL for traceability)
    * @param {string|null} options.audioFileUploadId - File upload ID for audio attachment
+   * @param {string|null} options.imageFileUploadId - File upload ID for image attachment
    * @param {Object} options.metadata - Additional metadata (duration, language, processingTime, url)
    * @returns {Promise<string>} Created page ID
    */
-  async createTranscriptPage({ title, transcript, source = 'Audio', sourceFilename = null, sourceRef = null, audioFileUploadId = null, metadata = {} }) {
+  async createTranscriptPage({ title, transcript, source = 'Audio', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {} }) {
     // Ensure transcript is always a string
     transcript = typeof transcript === 'string' ? transcript : String(transcript || '');
 
@@ -279,6 +280,27 @@ class NotionClient {
             file_upload: {
               id: audioFileUploadId
             }
+          }
+        });
+      }
+
+      // Add image block with heading if we have a file upload
+      if (imageFileUploadId) {
+        children.unshift({
+          object: 'block',
+          type: 'image',
+          image: {
+            type: 'file_upload',
+            file_upload: {
+              id: imageFileUploadId
+            }
+          }
+        });
+        children.unshift({
+          object: 'block',
+          type: 'heading_2',
+          heading_2: {
+            rich_text: [{ type: 'text', text: { content: title.slice(0, 2000) } }]
           }
         });
       }
