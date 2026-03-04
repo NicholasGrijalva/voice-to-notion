@@ -7,7 +7,7 @@
  * Features:
  * - Photo OCR via Gemini 2.5 Flash
  * - Reply chain: reply to any message with voice/text to append "My Take"
- * - Long-polling (no webhook/SSL/port exposure needed)
+ * - Webhook mode (set WEBHOOK_DOMAIN) or long-polling fallback
  */
 
 const { Telegraf } = require('telegraf');
@@ -15,6 +15,7 @@ const { message } = require('telegraf/filters');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { ocrImage } = require('./ocr');
 
 const URL_REGEX = /https?:\/\/[^\s]+/g;
@@ -473,14 +474,40 @@ class TelegramBot {
   }
 
   async start() {
-    console.log('[TelegramBot] Starting (long-polling)...');
     if (this.allowedUsers.size > 0) {
       console.log(`[TelegramBot] Authorized users: ${[...this.allowedUsers].join(', ')}`);
     } else {
       console.log('[TelegramBot] WARNING: No TELEGRAM_ALLOWED_USERS set -- bot is open to everyone');
     }
 
-    this.bot.launch();
+    const webhookDomain = process.env.WEBHOOK_DOMAIN;
+
+    if (webhookDomain) {
+      // Webhook mode: Telegram pushes updates to us
+      const port = parseInt(process.env.WEBHOOK_PORT || '3000', 10);
+      // Generate a secret path so only Telegram can reach the endpoint
+      const secretPath = process.env.WEBHOOK_SECRET_PATH
+        || `/webhook/${crypto.randomBytes(32).toString('hex')}`;
+
+      console.log(`[TelegramBot] Starting (webhook mode)...`);
+      console.log(`[TelegramBot] Webhook: ${webhookDomain}${secretPath}`);
+      console.log(`[TelegramBot] Listening on port ${port}`);
+
+      await this.bot.launch({
+        webhook: {
+          domain: webhookDomain,
+          port,
+          hookPath: secretPath,
+        },
+      });
+
+      console.log('[TelegramBot] Webhook registered with Telegram');
+    } else {
+      // Long-polling fallback (original behavior)
+      console.log('[TelegramBot] Starting (long-polling)...');
+      this.bot.launch();
+    }
+
     console.log('[TelegramBot] Running (photo OCR + reply chain enabled)');
   }
 

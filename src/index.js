@@ -15,13 +15,26 @@ const MediaPipeline = require('./media-pipeline');
 const GroqTranscriber = require('./groq-transcriber');
 
 // Validate required environment variables
-const required = ['SCRIBERR_API_URL', 'SCRIBERR_USERNAME', 'SCRIBERR_PASSWORD', 'NOTION_API_KEY', 'NOTION_DATABASE_ID'];
+// Scriberr is optional when running Telegram+Groq only (no local transcription)
+const hasScriberr = process.env.SCRIBERR_API_URL && process.env.SCRIBERR_USERNAME && process.env.SCRIBERR_PASSWORD;
+const hasGroq = !!process.env.GROQ_API_KEY;
+const hasTelegram = !!process.env.TELEGRAM_BOT_TOKEN;
+
+const required = ['NOTION_API_KEY', 'NOTION_DATABASE_ID'];
+if (!hasTelegram || !hasGroq) {
+  // Full pipeline mode requires Scriberr
+  required.push('SCRIBERR_API_URL', 'SCRIBERR_USERNAME', 'SCRIBERR_PASSWORD');
+}
 const missing = required.filter(key => !process.env[key]);
 
 if (missing.length > 0) {
   console.error(`[Worker] Missing required environment variables: ${missing.join(', ')}`);
   console.error('[Worker] Please check your .env file or environment configuration');
   process.exit(1);
+}
+
+if (!hasScriberr && hasGroq && hasTelegram) {
+  console.log('[Worker] Running in Telegram + Groq mode (no Scriberr required)');
 }
 
 // Configuration
@@ -51,10 +64,14 @@ console.log('║         Voice-to-Notion Worker v2.1                      ║');
 console.log('╚═══════════════════════════════════════════════════════════╝');
 console.log('');
 console.log('[Worker] Configuration:');
-console.log(`  Scriberr URL:     ${config.scriberr.url}`);
-console.log(`  Scriberr User:    ${config.scriberr.username}`);
+if (hasScriberr) {
+  console.log(`  Scriberr URL:     ${config.scriberr.url}`);
+  console.log(`  Scriberr User:    ${config.scriberr.username}`);
+  console.log(`  Sync Interval:    ${config.pollInterval / 1000}s`);
+} else {
+  console.log(`  Scriberr:         DISABLED (Groq-only mode)`);
+}
 console.log(`  Notion Database:  ${config.notion.databaseId.slice(0, 8)}...`);
-console.log(`  Sync Interval:    ${config.pollInterval / 1000}s`);
 console.log(`  Media Pipeline:   ${config.media.enabled ? 'ENABLED' : 'DISABLED'}`);
 if (config.media.enabled) {
   console.log(`  Media Interval:   ${config.media.pollInterval / 1000}s`);
@@ -62,24 +79,35 @@ if (config.media.enabled) {
   console.log(`  Inbox Dir:        ${config.media.inboxDir}`);
 }
 console.log(`  Telegram Bot:     ${process.env.TELEGRAM_BOT_TOKEN ? 'ENABLED' : 'DISABLED'}`);
+if (process.env.TELEGRAM_BOT_TOKEN && process.env.WEBHOOK_DOMAIN) {
+  console.log(`  Bot Mode:         Webhook (${process.env.WEBHOOK_DOMAIN})`);
+} else if (process.env.TELEGRAM_BOT_TOKEN) {
+  console.log(`  Bot Mode:         Long-polling`);
+}
 
 
 // Initialize shared clients
-const scriberr = new ScriberrClient(config.scriberr.url, config.scriberr.username, config.scriberr.password);
+let scriberr = null;
+if (hasScriberr) {
+  scriberr = new ScriberrClient(config.scriberr.url, config.scriberr.username, config.scriberr.password);
+}
 const notion = new NotionClient(config.notion.key, config.notion.databaseId);
 
 // Groq cloud transcription (optional — used by media pipeline if configured)
 let groq = null;
 if (process.env.GROQ_API_KEY) {
   groq = new GroqTranscriber(process.env.GROQ_API_KEY);
-  console.log(`  Transcription:    Groq (cloud) + Scriberr fallback`);
+  console.log(`  Transcription:    Groq (cloud)${hasScriberr ? ' + Scriberr fallback' : ''}`);
 } else {
-  console.log(`  Transcription:    Scriberr only (local)`);
+  console.log(`  Transcription:    ${hasScriberr ? 'Scriberr only (local)' : 'NONE — set GROQ_API_KEY or Scriberr'}`);
 }
 console.log('');
 
-// Pipeline 1: Scriberr Sync Worker
-const syncWorker = new SyncWorker(scriberr, notion, config.pollInterval);
+// Pipeline 1: Scriberr Sync Worker (only if Scriberr is configured)
+let syncWorker = null;
+if (scriberr) {
+  syncWorker = new SyncWorker(scriberr, notion, config.pollInterval);
+}
 
 // Pipeline 2: Media Ingestion Pipeline (optional)
 let mediaPipeline = null;
@@ -112,7 +140,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 
 const shutdown = (signal) => {
   console.log(`\n[Worker] Received ${signal}, shutting down gracefully...`);
-  syncWorker.stop();
+  if (syncWorker) syncWorker.stop();
   if (mediaPipeline) mediaPipeline.stop();
   if (telegramBot) telegramBot.stop();
   process.exit(0);
@@ -124,7 +152,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // Handle uncaught errors
 process.on('uncaughtException', (error) => {
   console.error('[Worker] Uncaught exception:', error);
-  syncWorker.stop();
+  if (syncWorker) syncWorker.stop();
   if (mediaPipeline) mediaPipeline.stop();
   if (telegramBot) telegramBot.stop();
   process.exit(1);
@@ -137,13 +165,17 @@ process.on('unhandledRejection', (reason, promise) => {
 // Start both pipelines
 async function main() {
   // Authenticate with Scriberr (register on first run, then login)
-  console.log('[Worker] Authenticating with Scriberr...');
-  await scriberr.init();
+  if (scriberr) {
+    console.log('[Worker] Authenticating with Scriberr...');
+    await scriberr.init();
+  }
 
   console.log('[Worker] Starting pipelines...\n');
 
-  // Start Scriberr sync
-  await syncWorker.start();
+  // Start Scriberr sync (if configured)
+  if (syncWorker) {
+    await syncWorker.start();
+  }
 
   // Start media pipeline (if enabled)
   if (mediaPipeline) {
