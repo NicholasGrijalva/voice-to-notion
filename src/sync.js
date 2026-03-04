@@ -9,7 +9,7 @@ const ScriberrClient = require('./scriberr');
 const NotionClient = require('./notion');
 
 // State file for tracking synced jobs
-const STATE_FILE = process.env.STATE_FILE || '/app/data/.sync-state.json';
+const STATE_FILE = process.env.STATE_FILE || './data/.sync-state.json';
 const TEMP_DIR = process.env.TEMP_DIR || '/tmp/audio-downloads';
 
 class SyncWorker {
@@ -145,16 +145,15 @@ class SyncWorker {
           this.syncedJobs.add(jobId);
           this.failedJobs.delete(jobId);
           synced++;
+          this.saveState();
           console.log(`[SyncWorker] ✓ Synced job ${jobId}`);
         } catch (error) {
           console.error(`[SyncWorker] ✗ Failed to sync job ${jobId}:`, error.message);
           this.failedJobs.set(jobId, retryCount + 1);
+          this.saveState();
           failed++;
         }
       }
-
-      // Save state after processing
-      this.saveState();
 
       const elapsed = Date.now() - startTime;
       console.log(`[SyncWorker] ═══ Sync complete: ${synced} synced, ${skipped} skipped, ${failed} failed (${elapsed}ms) ═══\n`);
@@ -176,7 +175,7 @@ class SyncWorker {
     const transcriptText = transcript.text || '';
 
     if (!transcriptText) {
-      console.warn(`[SyncWorker] Job ${jobId} has empty transcript`);
+      throw new Error(`Job ${jobId} has empty transcript (will retry)`);
     }
 
     // Determine source type

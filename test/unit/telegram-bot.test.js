@@ -1,11 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 
+const ocr = require('../../src/ocr');
 const TelegramBot = require('../../src/telegram-bot');
 
 describe('TelegramBot', () => {
   let bot;
   let mockPipeline;
+  let mockNotion;
   let mockBotInst;
 
   // Captured handler callbacks from mockBotInst.use / .start / .on
@@ -49,10 +51,25 @@ describe('TelegramBot', () => {
       }),
     };
 
+    // Mock Notion client for reply chain tests
+    mockNotion = {
+      appendBlocks: vi.fn().mockResolvedValue(),
+      uploadFile: vi.fn().mockResolvedValue('upload-id'),
+      createTranscriptPage: vi.fn().mockResolvedValue('page-id'),
+      splitText: vi.fn((text, max) => {
+        if (!text) return [''];
+        const chunks = [];
+        for (let i = 0; i < text.length; i += max) {
+          chunks.push(text.slice(i, i + max));
+        }
+        return chunks;
+      }),
+    };
+
     // Create TelegramBot (real Telegraf constructor runs but doesn't connect)
     bot = new TelegramBot({
       pipeline: mockPipeline,
-      notionClient: {},
+      notionClient: mockNotion,
       tempDir: '/tmp/test-telegram',
     });
 
@@ -112,6 +129,18 @@ describe('TelegramBot', () => {
       },
       ...overrides,
     };
+  }
+
+  // Helper: build a reply context pointing at a tracked message
+  function makeReplyCtx(trackedMessageId, overrides = {}) {
+    const { message: msgOverrides, ...restOverrides } = overrides;
+    return makeCtx({
+      message: {
+        reply_to_message: { message_id: trackedMessageId },
+        ...msgOverrides,
+      },
+      ...restOverrides,
+    });
   }
 
   describe('constructor', () => {
@@ -536,4 +565,351 @@ describe('TelegramBot', () => {
       expect(mockBotInst.stop).toHaveBeenCalledWith('shutdown');
     });
   });
+
+  // ─── Reply Chain Tests ──────────────────────────────────────────────────────
+
+  describe('reply chain', () => {
+    const TRACKED_MSG_ID = 999;
+    const TRACKED_PAGE_ID = 'page-abc-123';
+
+    beforeEach(() => {
+      // Spy on shared CJS module object (vi.mock doesn't work for CJS in Vitest v3)
+      vi.spyOn(ocr, 'ocrImage').mockResolvedValue('OCR extracted text from image');
+      vi.spyOn(bot, 'downloadTelegramFile').mockResolvedValue('/tmp/test-telegram/downloaded-file');
+    });
+
+    describe('trackSource()', () => {
+      it('should store pageId and timestamp in pendingSources', () => {
+        bot.trackSource(TRACKED_MSG_ID, TRACKED_PAGE_ID);
+
+        const entry = bot.pendingSources.get(TRACKED_MSG_ID);
+        expect(entry.pageId).toBe(TRACKED_PAGE_ID);
+        expect(entry.timestamp).toBeTypeOf('number');
+      });
+
+      it('should overwrite if same messageId tracked again', () => {
+        bot.trackSource(TRACKED_MSG_ID, 'old-page');
+        bot.trackSource(TRACKED_MSG_ID, 'new-page');
+
+        expect(bot.pendingSources.get(TRACKED_MSG_ID).pageId).toBe('new-page');
+        expect(bot.pendingSources.size).toBe(1);
+      });
+
+      it('pendingSources should be empty initially', () => {
+        expect(bot.pendingSources.size).toBe(0);
+      });
+    });
+
+    describe('checkReplyChain()', () => {
+      it('should return false when message has no reply_to_message', async () => {
+        const ctx = makeCtx({ message: { text: 'hello' } });
+        const result = await bot.checkReplyChain(ctx);
+        expect(result).toBe(false);
+      });
+
+      it('should return false when reply_to_message is not tracked', async () => {
+        const ctx = makeReplyCtx(777, { message: { text: 'my take' } });
+        const result = await bot.checkReplyChain(ctx);
+        expect(result).toBe(false);
+      });
+
+      it('should return true when reply_to_message is tracked', async () => {
+        bot.trackSource(TRACKED_MSG_ID, TRACKED_PAGE_ID);
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, { message: { text: 'my take' } });
+
+        const result = await bot.checkReplyChain(ctx);
+        expect(result).toBe(true);
+      });
+
+      it('should call handleReplyChain when reply is tracked', async () => {
+        bot.trackSource(TRACKED_MSG_ID, TRACKED_PAGE_ID);
+        const spy = vi.spyOn(bot, 'handleReplyChain').mockResolvedValue();
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, { message: { text: 'my take' } });
+
+        await bot.checkReplyChain(ctx);
+
+        expect(spy).toHaveBeenCalledWith(ctx, TRACKED_MSG_ID);
+      });
+
+      it('should not call handleReplyChain when reply is not tracked', async () => {
+        const spy = vi.spyOn(bot, 'handleReplyChain').mockResolvedValue();
+        const ctx = makeReplyCtx(777, { message: { text: 'my take' } });
+
+        await bot.checkReplyChain(ctx);
+
+        expect(spy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('handleReplyChain() with text reply', () => {
+      beforeEach(() => {
+        bot.trackSource(TRACKED_MSG_ID, TRACKED_PAGE_ID);
+      });
+
+      it('should call notion.appendBlocks with divider + heading + paragraph blocks', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, { message: { text: 'This is my take on it' } });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(mockNotion.appendBlocks).toHaveBeenCalledWith(
+          TRACKED_PAGE_ID,
+          expect.arrayContaining([
+            expect.objectContaining({ type: 'divider' }),
+            expect.objectContaining({ type: 'heading_2' }),
+            expect.objectContaining({ type: 'paragraph' }),
+          ])
+        );
+      });
+
+      it('should delete originalMessageId from pendingSources after success', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, { message: { text: 'my take' } });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(bot.pendingSources.has(TRACKED_MSG_ID)).toBe(false);
+      });
+
+      it('should edit status message to "Added your take"', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, { message: { text: 'my take' } });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(ctx.telegram.editMessageText).toHaveBeenCalledWith(
+          ctx.chat.id, 1, null,
+          'Added your take to the page.'
+        );
+      });
+
+      it('should edit status with error message on failure', async () => {
+        mockNotion.appendBlocks.mockRejectedValueOnce(new Error('Notion API down'));
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, { message: { text: 'my take' } });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(ctx.telegram.editMessageText).toHaveBeenCalledWith(
+          ctx.chat.id, 1, null,
+          'Failed to add take: Notion API down'
+        );
+      });
+    });
+
+    describe('handleReplyChain() with voice reply', () => {
+      beforeEach(() => {
+        bot.trackSource(TRACKED_MSG_ID, TRACKED_PAGE_ID);
+        mockPipeline.ingestFile.mockResolvedValue({ transcript: 'Voice transcription text' });
+      });
+
+      it('should call pipeline.ingestFile with skipNotion: true', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: { voice: { file_id: 'voice-123', duration: 10 } },
+        });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(mockPipeline.ingestFile).toHaveBeenCalledWith(
+          '/tmp/test-telegram/downloaded-file',
+          expect.objectContaining({ skipNotion: true })
+        );
+      });
+
+      it('should use transcription result as reply text', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: { voice: { file_id: 'voice-123', duration: 10 } },
+        });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(mockNotion.splitText).toHaveBeenCalledWith('Voice transcription text', 1900);
+      });
+
+      it('should call notion.appendBlocks with transcript content', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: { voice: { file_id: 'voice-123', duration: 10 } },
+        });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(mockNotion.appendBlocks).toHaveBeenCalledWith(
+          TRACKED_PAGE_ID,
+          expect.arrayContaining([
+            expect.objectContaining({ type: 'paragraph' }),
+          ])
+        );
+      });
+    });
+
+    describe('handleReplyChain() with photo reply', () => {
+      beforeEach(() => {
+        bot.trackSource(TRACKED_MSG_ID, TRACKED_PAGE_ID);
+      });
+
+      it('should call ocrImage on downloaded photo', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: {
+            photo: [
+              { file_id: 'small', width: 100, height: 100 },
+              { file_id: 'large', width: 800, height: 600 },
+            ],
+          },
+        });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(ocr.ocrImage).toHaveBeenCalledWith('/tmp/test-telegram/downloaded-file');
+      });
+
+      it('should attempt notion.uploadFile for the image', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: {
+            photo: [{ file_id: 'large', width: 800, height: 600 }],
+          },
+        });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(mockNotion.uploadFile).toHaveBeenCalled();
+      });
+
+      it('should include image block when upload succeeds', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: {
+            photo: [{ file_id: 'large', width: 800, height: 600 }],
+          },
+        });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        const blocks = mockNotion.appendBlocks.mock.calls[0][1];
+        const imageBlock = blocks.find(b => b.type === 'image');
+        expect(imageBlock).toBeDefined();
+        expect(imageBlock.image.file_upload.id).toBe('upload-id');
+      });
+
+      it('should still append text blocks when image upload fails', async () => {
+        mockNotion.uploadFile.mockRejectedValueOnce(new Error('upload failed'));
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: {
+            photo: [{ file_id: 'large', width: 800, height: 600 }],
+          },
+        });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(mockNotion.appendBlocks).toHaveBeenCalled();
+        const blocks = mockNotion.appendBlocks.mock.calls[0][1];
+        expect(blocks.find(b => b.type === 'paragraph')).toBeDefined();
+        expect(blocks.find(b => b.type === 'image')).toBeUndefined();
+      });
+    });
+
+    describe('handleReplyChain() edge cases', () => {
+      beforeEach(() => {
+        bot.trackSource(TRACKED_MSG_ID, TRACKED_PAGE_ID);
+      });
+
+      it('should edit status to "Could not extract content" when reply text is empty', async () => {
+        // A message with no text, no voice, no photo -> empty replyText
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: { document: { file_id: 'doc-1' } },
+        });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(ctx.telegram.editMessageText).toHaveBeenCalledWith(
+          ctx.chat.id, 1, null,
+          'Could not extract content from your reply.'
+        );
+      });
+
+      it('should not call appendBlocks when reply text is empty', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: { document: { file_id: 'doc-1' } },
+        });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(mockNotion.appendBlocks).not.toHaveBeenCalled();
+      });
+
+      it('should call cleanup in finally block regardless of success/failure', async () => {
+        mockNotion.appendBlocks.mockRejectedValueOnce(new Error('fail'));
+        const cleanupSpy = vi.spyOn(bot, 'cleanup');
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: { voice: { file_id: 'voice-1', duration: 5 } },
+        });
+
+        await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
+
+        expect(cleanupSpy).toHaveBeenCalled();
+      });
+    });
+
+    describe('cleanup timer', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+        if (bot.cleanupInterval) clearInterval(bot.cleanupInterval);
+      });
+
+      it('should remove entries older than 30 minutes', () => {
+        const now = Date.now();
+        bot.pendingSources.set(1, { pageId: 'old', timestamp: now - 31 * 60 * 1000 });
+        bot.pendingSources.set(2, { pageId: 'fresh', timestamp: now });
+
+        bot.startCleanupTimer();
+        vi.advanceTimersByTime(5 * 60 * 1000); // trigger cleanup
+
+        expect(bot.pendingSources.has(1)).toBe(false);
+        expect(bot.pendingSources.has(2)).toBe(true);
+      });
+
+      it('should keep entries younger than 30 minutes', () => {
+        const now = Date.now();
+        bot.pendingSources.set(1, { pageId: 'recent', timestamp: now - 10 * 60 * 1000 });
+
+        bot.startCleanupTimer();
+        vi.advanceTimersByTime(5 * 60 * 1000);
+
+        expect(bot.pendingSources.has(1)).toBe(true);
+      });
+    });
+
+    describe('handler integration with reply chain', () => {
+      beforeEach(() => {
+        bot.trackSource(TRACKED_MSG_ID, TRACKED_PAGE_ID);
+      });
+
+      it('handleText should return early when reply is to tracked message', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: { text: 'https://youtube.com/watch?v=test' },
+        });
+
+        await bot.handleText(ctx);
+
+        // Should NOT process the URL since it's a reply chain
+        expect(mockPipeline.ingest).not.toHaveBeenCalled();
+        // Should have appended blocks to existing page instead
+        expect(mockNotion.appendBlocks).toHaveBeenCalledWith(TRACKED_PAGE_ID, expect.any(Array));
+      });
+
+      it('handlePhoto should return early when reply is to tracked message', async () => {
+        const ctx = makeReplyCtx(TRACKED_MSG_ID, {
+          message: {
+            photo: [{ file_id: 'photo-1', width: 800, height: 600 }],
+          },
+        });
+
+        await bot.handlePhoto(ctx);
+
+        // Should NOT create a new OCR page
+        expect(mockNotion.createTranscriptPage).not.toHaveBeenCalled();
+        // Should have appended to existing page
+        expect(mockNotion.appendBlocks).toHaveBeenCalledWith(TRACKED_PAGE_ID, expect.any(Array));
+      });
+    });
+  });
+
 });

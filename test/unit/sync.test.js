@@ -331,6 +331,69 @@ describe('SyncWorker', () => {
       // Should not throw
       await worker.sync();
     });
+
+    it('should not add job to syncedJobs when transcript is empty', async () => {
+      mockScriberr.getJobs.mockResolvedValue([
+        { id: 'job-empty', filename: 'test.mp3' },
+      ]);
+      mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+
+      await worker.sync();
+
+      expect(worker.syncedJobs.has('job-empty')).toBe(false);
+    });
+
+    it('should increment failedJobs when transcript is empty', async () => {
+      mockScriberr.getJobs.mockResolvedValue([
+        { id: 'job-empty', filename: 'test.mp3' },
+      ]);
+      mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+
+      await worker.sync();
+
+      expect(worker.failedJobs.get('job-empty')).toBe(1);
+    });
+
+    it('should save state after each successful job sync', async () => {
+      mockScriberr.getJobs.mockResolvedValue([
+        { id: 'job-1', filename: 'test1.mp3' },
+        { id: 'job-2', filename: 'test2.mp3' },
+      ]);
+      vi.spyOn(worker, 'syncJob').mockResolvedValue();
+      const saveSpy = vi.spyOn(worker, 'saveState');
+
+      await worker.sync();
+
+      expect(saveSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('should save state after failed job to persist retry count', async () => {
+      mockScriberr.getJobs.mockResolvedValue([
+        { id: 'job-1', filename: 'test.mp3' },
+      ]);
+      vi.spyOn(worker, 'syncJob').mockRejectedValue(new Error('failed'));
+      const saveSpy = vi.spyOn(worker, 'saveState');
+
+      await worker.sync();
+
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('should preserve first job in syncedJobs if second job fails', async () => {
+      mockScriberr.getJobs.mockResolvedValue([
+        { id: 'job-1', filename: 'test1.mp3' },
+        { id: 'job-2', filename: 'test2.mp3' },
+      ]);
+      vi.spyOn(worker, 'syncJob')
+        .mockResolvedValueOnce()
+        .mockRejectedValueOnce(new Error('fail'));
+
+      await worker.sync();
+
+      expect(worker.syncedJobs.has('job-1')).toBe(true);
+      expect(worker.syncedJobs.has('job-2')).toBe(false);
+      expect(worker.failedJobs.get('job-2')).toBe(1);
+    });
   });
 
   describe('syncJob()', () => {
@@ -412,6 +475,28 @@ describe('SyncWorker', () => {
           sourceFilename: expect.stringContaining('Transcript'),
         })
       );
+    });
+
+    it('should throw when transcript text is empty', async () => {
+      mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+
+      await expect(worker.syncJob({ id: 'job-empty', filename: 'test.mp3' }))
+        .rejects.toThrow('empty transcript');
+    });
+
+    it('should throw when transcript text is null', async () => {
+      mockScriberr.getTranscript.mockResolvedValue({ text: null, language: 'en' });
+
+      await expect(worker.syncJob({ id: 'job-null', filename: 'test.mp3' }))
+        .rejects.toThrow('empty transcript');
+    });
+
+    it('should not create Notion page when transcript is empty', async () => {
+      mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+
+      await worker.syncJob({ id: 'job-empty', filename: 'test.mp3' }).catch(() => {});
+
+      expect(mockNotion.createTranscriptPage).not.toHaveBeenCalled();
     });
   });
 

@@ -27,8 +27,8 @@ class MediaPipeline {
     this.groq = groqTranscriber || null;
 
     // Directories
-    this.inboxDir = config.inboxDir || '/app/data/inbox_media';
-    this.processedDir = config.processedDir || '/app/data/processed';
+    this.inboxDir = config.inboxDir || './data/inbox_media';
+    this.processedDir = config.processedDir || './data/processed';
     this.tempDir = config.tempDir || '/tmp/media-pipeline';
 
     // Settings
@@ -187,6 +187,7 @@ class MediaPipeline {
     let transcript = null;
     let audioResult = null;
     let audioFileUploadId = null;
+    let audioPath = null;
 
     try {
       // Step 1: Try YouTube transcript first (fast, avoids downloading)
@@ -209,7 +210,7 @@ class MediaPipeline {
         const isAudio = await this.extractor.isAudioOnly(downloadResult.filePath)
           .catch(() => downloadResult.filePath.endsWith(`.${this.audioFormat}`));
 
-        let audioPath = downloadResult.filePath;
+        audioPath = downloadResult.filePath;
 
         // Extract audio from video if needed
         if (!isAudio) {
@@ -230,7 +231,7 @@ class MediaPipeline {
       }
 
       // Step 4: Upload audio to Notion
-      const audioPath = audioResult?.filePath || downloadResult.filePath;
+      audioPath = audioResult?.filePath || downloadResult.filePath;
       try {
         audioFileUploadId = await this.notion.uploadFile(
           audioPath,

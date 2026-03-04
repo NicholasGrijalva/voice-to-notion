@@ -40,8 +40,8 @@ const config = {
     enabled: process.env.ENABLE_MEDIA_PIPELINE !== 'false',
     pollInterval: parseInt(process.env.MEDIA_POLL_INTERVAL_SECONDS || '15', 10) * 1000,
     audioFormat: process.env.AUDIO_FORMAT || 'mp3',
-    inboxDir: process.env.MEDIA_INBOX_DIR || '/app/data/inbox_media',
-    processedDir: process.env.MEDIA_PROCESSED_DIR || '/app/data/processed',
+    inboxDir: process.env.MEDIA_INBOX_DIR || './data/inbox_media',
+    processedDir: process.env.MEDIA_PROCESSED_DIR || './data/processed',
     tempDir: process.env.TEMP_DIR || '/tmp/media-pipeline'
   }
 };

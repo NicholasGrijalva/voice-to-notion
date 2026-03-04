@@ -128,8 +128,8 @@ describe('MediaPipeline', () => {
         notionClient: mockNotion,
         scriberrClient: mockScriberr,
       });
-      expect(p.inboxDir).toBe('/app/data/inbox_media');
-      expect(p.processedDir).toBe('/app/data/processed');
+      expect(p.inboxDir).toBe('./data/inbox_media');
+      expect(p.processedDir).toBe('./data/processed');
       expect(p.tempDir).toBe('/tmp/media-pipeline');
     });
 
