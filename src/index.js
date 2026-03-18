@@ -68,30 +68,30 @@ console.log(`  Telegram Bot:     ${process.env.TELEGRAM_BOT_TOKEN ? 'ENABLED' : 
 // Initialize shared clients
 const scriberr = new ScriberrClient(config.scriberr.url, config.scriberr.username, config.scriberr.password);
 
-// Destination: Notion (default) or Obsidian
-const destination = (process.env.DESTINATION || 'notion').toLowerCase();
-let writeClient;
+// Build both clients (if configured) so /mode can toggle at runtime
+const notionClientInstance = new NotionClient(config.notion.key, config.notion.databaseId);
 
-if (destination === 'obsidian') {
-  const obsidianKey = process.env.OBSIDIAN_LOCAL_REST_API_KEY;
+let obsidianClientInstance = null;
+const obsidianKey = process.env.OBSIDIAN_LOCAL_REST_API_KEY;
+if (obsidianKey) {
   const obsidianPort = parseInt(process.env.OBSIDIAN_REST_API_PORT || '27124', 10);
   const obsidianFolder = process.env.OBSIDIAN_CAPTURE_FOLDER || '01_Capture';
-  if (!obsidianKey) {
-    console.error('[Worker] DESTINATION=obsidian requires OBSIDIAN_LOCAL_REST_API_KEY');
-    process.exit(1);
-  }
-  writeClient = new ObsidianClient(obsidianKey, null, {
+  obsidianClientInstance = new ObsidianClient(obsidianKey, null, {
     port: obsidianPort,
     captureFolder: obsidianFolder,
   });
-  console.log(`  Destination:      Obsidian (port ${obsidianPort}, folder: ${obsidianFolder})`);
-} else {
-  writeClient = new NotionClient(config.notion.key, config.notion.databaseId);
-  console.log(`  Destination:      Notion`);
 }
 
-// Keep 'notion' name for backward compat with sync/media-pipeline/telegram-bot
-const notion = writeClient;
+// Select active destination
+const destination = (process.env.DESTINATION || 'notion').toLowerCase();
+const notion = destination === 'obsidian' && obsidianClientInstance
+  ? obsidianClientInstance
+  : notionClientInstance;
+
+console.log(`  Destination:      ${destination === 'obsidian' ? 'Obsidian' : 'Notion'} (toggle via /mode in Telegram)`);
+if (obsidianClientInstance) {
+  console.log(`  Obsidian:         configured (port ${process.env.OBSIDIAN_REST_API_PORT || '27124'})`);
+}
 
 // Groq cloud transcription (optional — used by media pipeline if configured)
 let groq = null;
@@ -130,7 +130,8 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   const TelegramBot = require('./telegram-bot');
   telegramBot = new TelegramBot({
     pipeline: mediaPipeline,
-    notionClient: notion,
+    notionClient: notionClientInstance,
+    obsidianClient: obsidianClientInstance,
     tempDir: config.media.tempDir ? config.media.tempDir + '/telegram' : '/tmp/telegram-downloads'
   });
 }

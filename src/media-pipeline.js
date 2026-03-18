@@ -261,10 +261,10 @@ class MediaPipeline {
       });
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const notionUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
-      console.log(`[MediaPipeline] ═══ Complete: ${downloadResult.title} (${elapsed}s) → ${notionUrl} ═══\n`);
+      const locationUrl = this.formatLocation(pageId);
+      console.log(`[MediaPipeline] ═══ Complete: ${downloadResult.title} (${elapsed}s) → ${locationUrl} ═══\n`);
 
-      return { pageId, notionUrl, title: downloadResult.title, url };
+      return { pageId, notionUrl: locationUrl, title: downloadResult.title, url };
 
     } finally {
       // Cleanup temp files
@@ -369,10 +369,10 @@ class MediaPipeline {
       });
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const notionUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
-      console.log(`[MediaPipeline] ═══ Complete: ${title} (${elapsed}s) → ${notionUrl} ═══\n`);
+      const locationUrl = this.formatLocation(pageId);
+      console.log(`[MediaPipeline] ═══ Complete: ${title} (${elapsed}s) → ${locationUrl} ═══\n`);
 
-      return { pageId, notionUrl, title };
+      return { pageId, notionUrl: locationUrl, title };
 
     } finally {
       // Only clean up extracted/converted temp files, not the original inbox file
@@ -429,6 +429,18 @@ class MediaPipeline {
   /**
    * Determine Notion source category
    */
+  /**
+   * Format a location string for the created note/page.
+   * Returns a Notion URL or an Obsidian vault path.
+   */
+  formatLocation(pageId) {
+    const isObsidian = this.notion?.constructor?.name === 'ObsidianClient';
+    if (isObsidian) {
+      return pageId; // Already a vault-relative path like "01_Capture/Title.md"
+    }
+    return `https://notion.so/${pageId.replace(/-/g, '')}`;
+  }
+
   getSourceCategory(downloadResult) {
     if (downloadResult.sourceType === 'youtube') return 'YouTube';
     const videoTypes = ['vimeo', 'twitch', 'tiktok', 'direct_video'];

@@ -20,11 +20,15 @@ const ocr = require('./ocr');
 const URL_REGEX = /https?:\/\/[^\s]+/g;
 
 class TelegramBot {
-  constructor({ pipeline, notionClient, tempDir }) {
+  constructor({ pipeline, notionClient, obsidianClient, tempDir }) {
     this.pipeline = pipeline;
-    this.notion = notionClient;
+    this.notionClient = notionClient;
+    this.obsidianClient = obsidianClient;
+    // Active write client -- starts based on DESTINATION env
+    this.notion = (process.env.DESTINATION || 'notion').toLowerCase() === 'obsidian'
+      ? obsidianClient || notionClient
+      : notionClient;
     this.tempDir = tempDir || '/tmp/telegram-downloads';
-    this.isObsidian = notionClient?.constructor?.name === 'ObsidianClient';
 
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) throw new Error('TELEGRAM_BOT_TOKEN not set');
@@ -32,7 +36,7 @@ class TelegramBot {
     this.bot = new Telegraf(token);
     this.allowedUsers = this.parseAllowedUsers();
 
-    // Reply chain: track messages that created Notion pages
+    // Reply chain: track messages that created pages/notes
     // message_id -> { pageId, timestamp }
     this.pendingSources = new Map();
 
@@ -53,6 +57,26 @@ class TelegramBot {
     }
   }
 
+  get isObsidian() {
+    return this.notion?.constructor?.name === 'ObsidianClient';
+  }
+
+  get destLabel() {
+    return this.isObsidian ? 'Obsidian' : 'Notion';
+  }
+
+  /**
+   * Format a result message with the right location for current destination.
+   */
+  formatResult(title, pageId) {
+    if (this.isObsidian) {
+      // pageId is a vault path like "01_Capture/Title.md"
+      return `Saved to Obsidian: ${title}\n${pageId}`;
+    }
+    const notionUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
+    return `Saved to Notion: ${title}\n${notionUrl}`;
+  }
+
   registerHandlers() {
     // Auth middleware -- silently ignore unauthorized users
     this.bot.use((ctx, next) => {
@@ -64,12 +88,49 @@ class TelegramBot {
 
     // /start command
     this.bot.start((ctx) => {
-      const dest = this.isObsidian ? 'Obsidian vault' : 'Notion';
       ctx.reply(
         `Send me URLs, voice notes, photos, or media files.\n` +
-        `I'll transcribe/OCR and save to ${dest}.\n\n` +
-        `Reply to any message with voice or text to add your take.`
+        `I'll transcribe/OCR and save to ${this.destLabel}.\n\n` +
+        `Reply to any message with voice or text to add your take.\n` +
+        `Use /mode to switch between Notion and Obsidian.`
       );
+    });
+
+    // /mode command -- toggle or set destination
+    this.bot.command('mode', (ctx) => {
+      const args = ctx.message.text.split(' ').slice(1);
+      const requested = args[0]?.toLowerCase();
+
+      if (requested === 'notion') {
+        if (!this.notionClient) return ctx.reply('Notion client not configured.');
+        this.notion = this.notionClient;
+        if (this.pipeline) this.pipeline.notion = this.notionClient;
+        return ctx.reply('Switched to Notion.');
+      }
+      if (requested === 'obsidian') {
+        if (!this.obsidianClient) return ctx.reply('Obsidian client not configured. Set OBSIDIAN_LOCAL_REST_API_KEY in .env.');
+        this.notion = this.obsidianClient;
+        if (this.pipeline) this.pipeline.notion = this.obsidianClient;
+        return ctx.reply('Switched to Obsidian.');
+      }
+
+      // No arg -- toggle
+      if (this.isObsidian) {
+        if (!this.notionClient) return ctx.reply('Notion client not configured.');
+        this.notion = this.notionClient;
+        if (this.pipeline) this.pipeline.notion = this.notionClient;
+        return ctx.reply('Switched to Notion.');
+      } else {
+        if (!this.obsidianClient) return ctx.reply('Obsidian client not configured. Set OBSIDIAN_LOCAL_REST_API_KEY in .env.');
+        this.notion = this.obsidianClient;
+        if (this.pipeline) this.pipeline.notion = this.obsidianClient;
+        return ctx.reply('Switched to Obsidian.');
+      }
+    });
+
+    // /status command -- show current destination
+    this.bot.command('status', (ctx) => {
+      ctx.reply(`Current destination: ${this.destLabel}`);
     });
 
     // Text messages (extract URLs, or reply chain)
@@ -252,7 +313,7 @@ class TelegramBot {
         this.trackSource(ctx.message.message_id, result.pageId);
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
-          `Done: ${result.title}\n${result.notionUrl}`
+          this.formatResult(result.title, result.pageId)
         );
       } catch (error) {
         await ctx.telegram.editMessageText(
@@ -305,11 +366,9 @@ class TelegramBot {
 
       this.trackSource(ctx.message.message_id, pageId);
 
-      const location = this.isObsidian ? pageId : `https://notion.so/${pageId.replace(/-/g, '')}`;
-      const prefix = imageFileUploadId ? 'Done' : 'Done (image upload failed)';
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
-        `${prefix}: ${title}\n${location}`
+        this.formatResult(title, pageId)
       );
     } catch (error) {
       await ctx.telegram.editMessageText(
@@ -363,7 +422,7 @@ class TelegramBot {
       this.trackSource(ctx.message.message_id, result.pageId);
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
-        `Done: ${result.title}\n${result.notionUrl}`
+        this.formatResult(result.title, result.pageId)
       );
     } catch (error) {
       await ctx.telegram.editMessageText(
@@ -421,11 +480,9 @@ class TelegramBot {
 
         this.trackSource(ctx.message.message_id, pageId);
 
-        const location = this.isObsidian ? pageId : `https://notion.so/${pageId.replace(/-/g, '')}`;
-        const prefix = imageFileUploadId ? 'Done' : 'Done (image upload failed)';
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
-          `${prefix}: ${title}\n${location}`
+          this.formatResult(title, pageId)
         );
       } catch (error) {
         await ctx.telegram.editMessageText(
@@ -456,7 +513,7 @@ class TelegramBot {
       this.trackSource(ctx.message.message_id, result.pageId);
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
-        `Done: ${result.title}\n${result.notionUrl}`
+        this.formatResult(result.title, result.pageId)
       );
     } catch (error) {
       await ctx.telegram.editMessageText(
