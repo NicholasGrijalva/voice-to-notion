@@ -24,6 +24,7 @@ class TelegramBot {
     this.pipeline = pipeline;
     this.notion = notionClient;
     this.tempDir = tempDir || '/tmp/telegram-downloads';
+    this.isObsidian = notionClient?.constructor?.name === 'ObsidianClient';
 
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) throw new Error('TELEGRAM_BOT_TOKEN not set');
@@ -63,10 +64,11 @@ class TelegramBot {
 
     // /start command
     this.bot.start((ctx) => {
+      const dest = this.isObsidian ? 'Obsidian vault' : 'Notion';
       ctx.reply(
-        'Send me URLs, voice notes, photos, or media files.\n' +
-        'I\'ll transcribe/OCR and save to Notion.\n\n' +
-        'Reply to any message with voice or text to add your take.'
+        `Send me URLs, voice notes, photos, or media files.\n` +
+        `I'll transcribe/OCR and save to ${dest}.\n\n` +
+        `Reply to any message with voice or text to add your take.`
       );
     });
 
@@ -303,11 +305,11 @@ class TelegramBot {
 
       this.trackSource(ctx.message.message_id, pageId);
 
-      const notionUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
+      const location = this.isObsidian ? pageId : `https://notion.so/${pageId.replace(/-/g, '')}`;
       const prefix = imageFileUploadId ? 'Done' : 'Done (image upload failed)';
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
-        `${prefix}: ${title}\n${notionUrl}`
+        `${prefix}: ${title}\n${location}`
       );
     } catch (error) {
       await ctx.telegram.editMessageText(
@@ -419,11 +421,11 @@ class TelegramBot {
 
         this.trackSource(ctx.message.message_id, pageId);
 
-        const notionUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
+        const location = this.isObsidian ? pageId : `https://notion.so/${pageId.replace(/-/g, '')}`;
         const prefix = imageFileUploadId ? 'Done' : 'Done (image upload failed)';
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
-          `${prefix}: ${title}\n${notionUrl}`
+          `${prefix}: ${title}\n${location}`
         );
       } catch (error) {
         await ctx.telegram.editMessageText(

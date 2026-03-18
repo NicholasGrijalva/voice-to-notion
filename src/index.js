@@ -10,6 +10,7 @@ require('dotenv').config();
 
 const ScriberrClient = require('./scriberr');
 const NotionClient = require('./notion');
+const ObsidianClient = require('./obsidian');
 const SyncWorker = require('./sync');
 const MediaPipeline = require('./media-pipeline');
 const GroqTranscriber = require('./groq-transcriber');
@@ -66,7 +67,31 @@ console.log(`  Telegram Bot:     ${process.env.TELEGRAM_BOT_TOKEN ? 'ENABLED' : 
 
 // Initialize shared clients
 const scriberr = new ScriberrClient(config.scriberr.url, config.scriberr.username, config.scriberr.password);
-const notion = new NotionClient(config.notion.key, config.notion.databaseId);
+
+// Destination: Notion (default) or Obsidian
+const destination = (process.env.DESTINATION || 'notion').toLowerCase();
+let writeClient;
+
+if (destination === 'obsidian') {
+  const obsidianKey = process.env.OBSIDIAN_LOCAL_REST_API_KEY;
+  const obsidianPort = parseInt(process.env.OBSIDIAN_REST_API_PORT || '27124', 10);
+  const obsidianFolder = process.env.OBSIDIAN_CAPTURE_FOLDER || '01_Capture';
+  if (!obsidianKey) {
+    console.error('[Worker] DESTINATION=obsidian requires OBSIDIAN_LOCAL_REST_API_KEY');
+    process.exit(1);
+  }
+  writeClient = new ObsidianClient(obsidianKey, null, {
+    port: obsidianPort,
+    captureFolder: obsidianFolder,
+  });
+  console.log(`  Destination:      Obsidian (port ${obsidianPort}, folder: ${obsidianFolder})`);
+} else {
+  writeClient = new NotionClient(config.notion.key, config.notion.databaseId);
+  console.log(`  Destination:      Notion`);
+}
+
+// Keep 'notion' name for backward compat with sync/media-pipeline/telegram-bot
+const notion = writeClient;
 
 // Groq cloud transcription (optional — used by media pipeline if configured)
 let groq = null;
