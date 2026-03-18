@@ -1,6 +1,6 @@
-# Voice-to-Notion Transcription System
+# Voice-to-Notion/Obsidian Transcription System
 
-Self-hosted voice & media transcription pipeline: **Record/Download → Transcribe → Notion**
+Self-hosted voice & media transcription pipeline: **Record/Download → Transcribe → Notion or Obsidian**
 
 Zero OpenAI dependency by default. Uses [Scriberr](https://github.com/rishikanthc/Scriberr) (WhisperX) for local transcription, optional [Groq](https://groq.com) cloud fallback for speed, yt-dlp for media downloads, ffmpeg for audio extraction.
 
@@ -24,8 +24,9 @@ docker compose logs -f notion-worker
 
 ## Features
 
-- **Telegram bot** — send URLs, voice notes, photos, or media from your phone; get Notion pages back
-- **Photo OCR** — send photos/screenshots; Gemini 2.5 Flash extracts text, embeds original image + transcription in Notion pages
+- **Dual destination** — write to Notion (default) or Obsidian vault via `DESTINATION` env var
+- **Telegram bot** — send URLs, voice notes, photos, or media from your phone
+- **Photo OCR** — send photos/screenshots; Gemini 2.5 Flash extracts text
 - **Reply chain** — reply to any captured message with voice/text to append a "My Take" annotation
 - **Auto-generated titles** — Groq LLM summarizes transcripts into descriptive page titles
 - **Local transcription** via Scriberr (WhisperX)
@@ -316,6 +317,31 @@ done
 
 All config is in `.env`:
 
+### Destination
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DESTINATION` | `notion` or `obsidian` | `notion` |
+
+### Notion (when DESTINATION=notion)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NOTION_API_KEY` | Notion integration secret | (required) |
+| `NOTION_DATABASE_ID` | Target database ID | (required) |
+
+### Obsidian (when DESTINATION=obsidian)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OBSIDIAN_LOCAL_REST_API_KEY` | API key from Obsidian Local REST API plugin | (required) |
+| `OBSIDIAN_REST_API_PORT` | REST API port | 27124 |
+| `OBSIDIAN_CAPTURE_FOLDER` | Vault folder for new notes | 01_Capture |
+
+Requires Obsidian running with the [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) plugin. Notes are written as markdown with YAML frontmatter. The reply chain "My Take" feature appends to existing notes.
+
+### Transcription & Services
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SCRIBERR_USERNAME` | Scriberr login username | (required) |
@@ -326,8 +352,6 @@ All config is in `.env`:
 | `COMPUTE_TYPE` | float32/int8 (int8 is faster on CPU) | int8 |
 | `WHISPER_BATCH_SIZE` | Batch size (lower = less RAM) | 4 |
 | `GROQ_API_KEY` | Groq API key for cloud transcription | (optional) |
-| `NOTION_API_KEY` | Notion integration secret | (required) |
-| `NOTION_DATABASE_ID` | Target database ID | (required) |
 | `POLL_INTERVAL_SECONDS` | Scriberr poll interval | 30 |
 | `ENABLE_MEDIA_PIPELINE` | Enable URL ingestion pipeline | true |
 | `MEDIA_POLL_INTERVAL_SECONDS` | Inbox scan interval | 15 |
@@ -413,6 +437,7 @@ voice-to-notion/
 │   ├── index.js            # Entry point (runs all pipelines)
 │   ├── scriberr.js         # Scriberr API client
 │   ├── notion.js           # Notion API client (with file upload)
+│   ├── obsidian.js         # Obsidian vault client (via Local REST API)
 │   ├── sync.js             # Pipeline 1: Scriberr poll/sync worker
 │   ├── media-pipeline.js   # Pipeline 2: Orchestrator (inbox → download → transcribe → Notion)
 │   ├── telegram-bot.js     # Pipeline 3: Telegram mobile capture (photo OCR + reply chain)
