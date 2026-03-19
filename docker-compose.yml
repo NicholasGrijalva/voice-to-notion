@@ -53,7 +53,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 300s
+      start_period: 900s
 
   # ═══════════════════════════════════════════════════════════════════════════
   # NOTION WORKER - Scriberr Sync + Media Ingestion Pipeline
@@ -91,6 +91,16 @@ services:
       ENABLE_MEDIA_PIPELINE: ${ENABLE_MEDIA_PIPELINE:-true}
       MEDIA_POLL_INTERVAL_SECONDS: ${MEDIA_POLL_INTERVAL_SECONDS:-15}
       AUDIO_FORMAT: ${AUDIO_FORMAT:-mp3}
+      # Telegram bot (mobile capture layer)
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
+      # Gemini OCR (photo text extraction)
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Obsidian (alternative destination)
+      OBSIDIAN_LOCAL_REST_API_KEY: ${OBSIDIAN_LOCAL_REST_API_KEY:-}
+      OBSIDIAN_REST_API_PORT: ${OBSIDIAN_REST_API_PORT:-27124}
+      OBSIDIAN_CAPTURE_FOLDER: ${OBSIDIAN_CAPTURE_FOLDER:-01_Capture}
+      DESTINATION: ${DESTINATION:-notion}
     depends_on:
       scriberr:
         condition: service_healthy
