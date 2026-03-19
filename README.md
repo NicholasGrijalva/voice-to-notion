@@ -39,6 +39,8 @@ docker compose logs -f notion-worker
 - **File-based inbox** — drop a .txt with URLs or media files, worker handles the rest
 - **One-command deployment** with Docker Compose
 - **State persistence** — survives restarts, tracks synced jobs
+- **macOS persistence** — launchd agent keeps stack alive through reboots/SSH disconnects
+- **OpenClaw skill** — manage stack via Telegram bot or OpenClaw agent
 
 ## Architecture
 
@@ -429,6 +431,25 @@ docker compose build notion-worker && docker compose up -d notion-worker
 
 **Monitor:** `docker stats` to check memory usage.
 
+## Persistent Deployment (macOS)
+
+For headless Mac Mini / server deployment, a launchd agent keeps the stack running through reboots and SSH disconnects:
+
+```bash
+# Load the agent (one-time)
+launchctl load ~/Library/LaunchAgents/com.voice-to-notion.plist
+
+# Check status
+launchctl print gui/$(id -u)/com.voice-to-notion
+
+# Logs
+tail -f ~/.voice-to-notion/logs/launchd.log
+```
+
+The plist runs `scripts/launchd-start.sh` which waits for Docker, then starts `docker-compose up` in foreground. Combined with Docker's `restart: unless-stopped`, this gives three layers of resilience: launchd → docker-compose → container restart policy.
+
+An **OpenClaw skill** (`voice-to-notion-manager`) is also available for managing the stack via Telegram or the OpenClaw agent. See `~/.openclaw/workspace/skills/voice-to-notion-manager/`.
+
 ## Files
 
 ```
@@ -448,9 +469,12 @@ voice-to-notion/
 │   └── yt-transcript.js    # YouTube subtitle/transcript fetcher
 ├── scripts/
 │   ├── boot.sh             # One-command startup (health checks + sequencing)
+│   ├── launchd-start.sh    # macOS launchd wrapper (persistent deployment)
 │   ├── test-connection.js  # Connection test
 │   ├── ingest-url.js       # CLI URL ingestion helper
 │   └── ingest-file.js      # CLI local file ingestion
+├── docs/
+│   └── ARCHITECTURE.md     # Comprehensive architecture documentation
 ├── inbox_media/            # Drop URL files here (bind-mounted)
 ├── processed/              # Completed files moved here
 ├── docker compose.yml      # One-command deployment
