@@ -508,7 +508,7 @@ class NotionClient {
         ? summary.summary + (summary.keyPoints ? '\n\n' + summary.keyPoints.join('\n') : '')
         : (content || '').slice(0, 2000);
       if (transcriptPreview) {
-        properties['Transcript'] = {
+        properties['Summary'] = {
           rich_text: [{ text: { content: transcriptPreview.slice(0, 2000) } }]
         };
       }
