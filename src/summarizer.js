@@ -57,7 +57,8 @@ class Summarizer {
       const result = {
         title: (parsed.title || meta.title || '').slice(0, 200),
         keyPoints: Array.isArray(parsed.key_points) ? parsed.key_points.slice(0, 7) : [],
-        summary: parsed.summary || parsed.concise_summary || ''
+        summary: parsed.summary || parsed.concise_summary || '',
+        tags: Array.isArray(parsed.tags) ? parsed.tags : []
       };
 
       console.log(`[Summarizer] Generated summary: "${result.title}" (${result.keyPoints.length} key points)`);
@@ -94,7 +95,8 @@ class Summarizer {
 {
   "title": "Descriptive title, max 10 words",
   "key_points": ["Point 1", "Point 2", "Point 3"],
-  "summary": "Concise 50-100 word summary"
+  "summary": "Concise 50-100 word summary",
+  "tags": ["tag1", "tag2"]
 }
 
 Rules:
@@ -102,7 +104,8 @@ Rules:
 - Summary should be 50-100 words, standalone (reader hasn't seen the source)
 - Title should be descriptive and specific, not generic
 - Only use information present in the provided content
-- Do not include meta-commentary about the summarization process`,
+- Do not include meta-commentary about the summarization process
+- tags: pick 0-3 from ONLY these options: "knowledge management", "information synthesis", "productivity", "cognitive load", "structured thinking". Only include tags that genuinely apply. If none fit, return an empty array.`,
 
       user: `${instruction}${metaContext}${authorContext}
 

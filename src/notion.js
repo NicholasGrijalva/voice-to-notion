@@ -503,6 +503,27 @@ class NotionClient {
       if (metadata.processingTime) properties['Processing Time (s)'] = { number: metadata.processingTime };
       if (metadata.url) properties['URL'] = { url: metadata.url };
 
+      // Transcript property: summary for table view (truncated to 2000 chars)
+      const transcriptPreview = summary
+        ? summary.summary + (summary.keyPoints ? '\n\n' + summary.keyPoints.join('\n') : '')
+        : (content || '').slice(0, 2000);
+      if (transcriptPreview) {
+        properties['Transcript'] = {
+          rich_text: [{ text: { content: transcriptPreview.slice(0, 2000) } }]
+        };
+      }
+
+      // Tags: auto-populated from LLM summary if available
+      if (summary && summary.tags && summary.tags.length > 0) {
+        const validTags = ['knowledge management', 'information synthesis', 'productivity', 'cognitive load', 'structured thinking'];
+        const filteredTags = summary.tags.filter(t => validTags.includes(t));
+        if (filteredTags.length > 0) {
+          properties['Tags'] = {
+            multi_select: filteredTags.map(t => ({ name: t }))
+          };
+        }
+      }
+
       const children = [];
 
       if (metadata.duration || metadata.language) {
