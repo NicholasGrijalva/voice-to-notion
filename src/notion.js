@@ -484,6 +484,59 @@ class NotionClient {
       return false;
     }
   }
+
+  /**
+   * Create a page with structured Summary + Content sections.
+   * Used by the enhanced pipeline (summarizer-enabled flow).
+   */
+  async createStructuredPage({ title, content, summary = null, source = 'Idea', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {} }) {
+    content = typeof content === 'string' ? content : String(content || '');
+    try {
+      const properties = {
+        'Title': { title: [{ text: { content: title.slice(0, 2000) } }] },
+        'Status': { select: { name: 'New' } },
+        'Date Added': { date: { start: new Date().toISOString() } },
+        'Type': { select: { name: source } },
+      };
+      if (sourceFilename) properties['Source Filename'] = { rich_text: [{ text: { content: sourceFilename.slice(0, 2000) } }] };
+      if (sourceRef) properties['Source'] = { rich_text: [{ text: { content: sourceRef.slice(0, 2000) } }] };
+      if (metadata.processingTime) properties['Processing Time (s)'] = { number: metadata.processingTime };
+      if (metadata.url) properties['URL'] = { url: metadata.url };
+
+      const children = [];
+
+      if (metadata.duration || metadata.language) {
+        const metaText = [metadata.duration ? `Duration: ${this.formatDuration(metadata.duration)}` : null, metadata.language ? `Language: ${metadata.language}` : null].filter(Boolean).join(' | ');
+        if (metaText) children.push({ object: 'block', type: 'callout', callout: { rich_text: [{ type: 'text', text: { content: metaText } }], icon: { emoji: '\uD83C\uDF99\uFE0F' } } });
+      }
+
+      if (audioFileUploadId) children.push({ object: 'block', type: 'audio', audio: { type: 'file_upload', file_upload: { id: audioFileUploadId } } });
+      if (imageFileUploadId) children.push({ object: 'block', type: 'image', image: { type: 'file_upload', file_upload: { id: imageFileUploadId } } });
+
+      if (summary) {
+        children.push({ object: 'block', type: 'heading_2', heading_2: { rich_text: [{ type: 'text', text: { content: 'Summary' } }] } });
+        if (summary.summary) children.push({ object: 'block', type: 'paragraph', paragraph: { rich_text: [{ type: 'text', text: { content: summary.summary } }] } });
+        if (summary.keyPoints && summary.keyPoints.length > 0) {
+          children.push({ object: 'block', type: 'heading_3', heading_3: { rich_text: [{ type: 'text', text: { content: 'Key Points' } }] } });
+          for (const point of summary.keyPoints) { children.push({ object: 'block', type: 'bulleted_list_item', bulleted_list_item: { rich_text: [{ type: 'text', text: { content: point } }] } }); }
+        }
+        children.push({ object: 'block', type: 'divider', divider: {} });
+      }
+
+      children.push({ object: 'block', type: 'heading_2', heading_2: { rich_text: [{ type: 'text', text: { content: 'Full Transcript' } }] } });
+      const contentChunks = this.splitText(content, 1900);
+      for (const chunk of contentChunks) { children.push({ object: 'block', type: 'paragraph', paragraph: { rich_text: [{ type: 'text', text: { content: chunk } }] } }); }
+
+      const response = await this.client.post('/pages', { parent: { type: 'database_id', database_id: this.databaseId }, properties, children: children.slice(0, 100) });
+      console.log(`[Notion] Created structured page: ${response.data.id}`);
+      if (children.length > 100) await this.appendBlocks(response.data.id, children.slice(100));
+      return response.data.id;
+    } catch (error) {
+      console.error('[Notion] Structured page creation failed:', error.response?.data || error.message);
+      throw error;
+    }
+  }
+
 }
 
 module.exports = NotionClient;

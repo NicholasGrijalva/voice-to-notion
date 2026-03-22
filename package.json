@@ -1,7 +1,7 @@
 {
   "name": "voice-to-notion",
-  "version": "2.0.0",
-  "description": "Self-hosted voice/media transcription to Notion. Polls Scriberr for transcripts, ingests URLs via yt-dlp, extracts audio with ffmpeg, and syncs everything to Notion with audio file attachments.",
+  "version": "3.0.0",
+  "description": "Self-hosted multi-format content capture to Notion/Obsidian. Voice, YouTube transcripts, articles, tweets, PDFs, and markdown -- with LLM auto-summarization.",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -15,14 +15,15 @@
   },
   "keywords": [
     "notion",
+    "obsidian",
     "transcription",
-    "scriberr",
-    "voice",
-    "audio",
-    "whisper",
+    "summarization",
+    "telegram",
     "yt-dlp",
-    "ffmpeg",
-    "podcast"
+    "groq",
+    "llm",
+    "capture",
+    "knowledge-management"
   ],
   "author": "Truth Seeker Inc",
   "license": "MIT",
@@ -33,7 +34,10 @@
     "enquirer": "^2.4.1",
     "fast-glob": "^3.3.3",
     "form-data": "^4.0.0",
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "jsdom": "^25.0.0",
+    "@mozilla/readability": "^0.5.0",
+    "pdf-parse": "^1.1.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.0",

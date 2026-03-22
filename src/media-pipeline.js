@@ -19,6 +19,10 @@ const path = require('path');
 const MediaDownloader = require('./media-downloader');
 const AudioExtractor = require('./audio-extractor');
 const YouTubeTranscript = require('./yt-transcript');
+const ContentRouter = require('./content-router');
+const WebScraper = require('./web-scraper');
+const TwitterExtractor = require('./twitter-extractor');
+const Summarizer = require('./summarizer');
 
 class MediaPipeline {
   constructor({ notionClient, scriberrClient, groqTranscriber, config = {} }) {
@@ -48,6 +52,10 @@ class MediaPipeline {
     this.ytTranscript = new YouTubeTranscript({
       outputDir: path.join(this.tempDir, 'transcripts')
     });
+
+    this.webScraper = new WebScraper();
+    this.twitterExtractor = new TwitterExtractor();
+    this.summarizer = this.groq ? new Summarizer(this.groq.apiKey) : null;
 
     this.isRunning = false;
     this.interval = null;
@@ -350,12 +358,21 @@ class MediaPipeline {
         console.warn(`[MediaPipeline] Audio upload to Notion failed:`, error.message);
       }
 
-      // Step 5: Create Notion page
+      // Step 5: Summarize
+      let summary = null;
+      if (this.summarizer && transcript.text.length > 100) {
+        const contentType = isAudio ? 'audio' : 'video';
+        summary = await this.summarizer.summarize(transcript.text, contentType, { title });
+        if (summary && summary.title) title = summary.title;
+      }
+
+      // Step 6: Create Notion/Obsidian page
       const processingTime = (Date.now() - startTime) / 1000;
       const source = isAudio ? 'Audio' : 'Video';
-      const pageId = await this.notion.createTranscriptPage({
+      const pageId = await this.notion.createStructuredPage({
         title,
-        transcript: transcript.text,
+        content: transcript.text,
+        summary,
         source,
         sourceFilename: filename,
         sourceRef: filePath,
@@ -478,6 +495,200 @@ class MediaPipeline {
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
+
+
+  /**
+   * Smart URL ingestion with content-type routing and auto-summarization.
+   * Routes to the correct extractor based on URL patterns, summarizes via LLM,
+   * then saves with structured Summary + Transcript page format.
+   *
+   * Falls back to the original ingest() for media URLs (YouTube audio, podcasts, etc.)
+   *
+   * @param {string} url
+   * @param {Object} opts
+   * @returns {Promise<{ pageId: string, title: string, url: string }>}
+   */
+  async ingestUrl(url, opts = {}) {
+    const startTime = Date.now();
+    const route = ContentRouter.detect(url);
+    console.log(`\n[MediaPipeline] === Smart ingest: ${url} (type: ${route.type}) ===`);
+
+    // YouTube and other media URLs: use existing ingest() for audio download,
+    // but add summarization on top
+    if (route.type === 'youtube') {
+      return this.ingestYouTubeWithSummary(url, opts);
+    }
+
+    // Media URLs (Spotify, SoundCloud, etc.): fall back to standard ingest
+    if (ContentRouter.isMediaUrl(url) && route.type !== 'twitter') {
+      return this.ingest(url, opts);
+    }
+
+    // Non-media content types: extract text, summarize, save
+    let extracted = null;
+
+    try {
+      switch (route.type) {
+        case 'twitter':
+          extracted = await this.twitterExtractor.extract(url, route.id);
+          break;
+
+        case 'pdf':
+          const pdfResult = await this.webScraper.extractPdf(url);
+          if (pdfResult) {
+            extracted = { title: pdfResult.title, content: pdfResult.content, author: pdfResult.author };
+          }
+          break;
+
+        case 'perplexity':
+        case 'linkedin':
+        case 'webpage':
+        default:
+          extracted = await this.webScraper.extract(url);
+          break;
+      }
+
+      if (!extracted || !extracted.content) {
+        console.warn(`[MediaPipeline] Extraction failed for ${route.type}, falling back to yt-dlp`);
+        return this.ingest(url, opts);
+      }
+
+      // Summarize
+      let summary = null;
+      if (this.summarizer) {
+        summary = await this.summarizer.summarize(extracted.content, route.type, {
+          title: extracted.title,
+          author: extracted.author,
+        });
+      }
+
+      // Use summary title if better than extracted title
+      const title = summary?.title || extracted.title || 'Untitled';
+
+      // Save to Notion/Obsidian with structured format
+      const processingTime = (Date.now() - startTime) / 1000;
+      const notionType = ContentRouter.toNotionType(route.type);
+      const pageId = await this.notion.createStructuredPage({
+        title,
+        content: extracted.content,
+        summary,
+        source: notionType,
+        sourceFilename: null,
+        sourceRef: url,
+        metadata: {
+          url,
+          processingTime: Math.round(processingTime),
+        },
+      });
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const locationUrl = this.formatLocation(pageId);
+      console.log(`[MediaPipeline] === Complete: ${title} (${elapsed}s) -> ${locationUrl} ===\n`);
+
+      return { pageId, notionUrl: locationUrl, title, url };
+
+    } catch (error) {
+      console.error(`[MediaPipeline] Smart ingest failed: ${error.message}`);
+      // Last resort: try standard ingest
+      return this.ingest(url, opts);
+    }
+  }
+
+  /**
+   * YouTube-specific flow: get transcript + download audio + summarize.
+   */
+  async ingestYouTubeWithSummary(url, opts = {}) {
+    const startTime = Date.now();
+
+    // Step 1: Get transcript
+    let transcript = null;
+    if (!opts.skipTranscript && !this.skipTranscript) {
+      transcript = await this.ytTranscript.fetch(url);
+    }
+
+    // Step 2: Download media (for audio attachment + metadata like title)
+    let downloadResult = null;
+    let audioPath = null;
+    let audioFileUploadId = null;
+
+    try {
+      downloadResult = await this.downloader.download(url, {
+        audioOnly: opts.audioOnly !== false,
+        format: this.audioFormat,
+      });
+    } catch (error) {
+      console.warn(`[MediaPipeline] YouTube download failed: ${error.message}`);
+    }
+
+    // Step 3: If no transcript, transcribe the audio
+    if (!transcript && downloadResult) {
+      audioPath = downloadResult.filePath;
+      if (this.scriberr || this.groq) {
+        transcript = await this.transcribeViaScriberr(audioPath, downloadResult.filename);
+      }
+    }
+
+    if (!transcript) {
+      transcript = { text: '[Transcript not available]', language: 'en' };
+    }
+
+    // Step 4: Upload audio
+    if (downloadResult) {
+      try {
+        audioFileUploadId = await this.notion.uploadFile(
+          downloadResult.filePath,
+          `${downloadResult.title}.${this.audioFormat}`,
+          this.extractor.getMimeType(this.audioFormat)
+        );
+      } catch (error) {
+        console.warn(`[MediaPipeline] Audio upload failed: ${error.message}`);
+      }
+    }
+
+    // Step 5: Summarize
+    let summary = null;
+    if (this.summarizer && transcript.text.length > 100) {
+      summary = await this.summarizer.summarize(transcript.text, 'youtube', {
+        title: downloadResult?.title,
+      });
+    }
+
+    // Step 6: Generate title
+    let title = downloadResult?.title || 'YouTube Video';
+    if (summary?.title) title = summary.title;
+    else if (this.groq && transcript.text.length > 50) {
+      const genTitle = await this.groq.generateTitle(transcript.text).catch(() => null);
+      if (genTitle) title = genTitle;
+    }
+
+    // Step 7: Save
+    const processingTime = (Date.now() - startTime) / 1000;
+    const pageId = await this.notion.createStructuredPage({
+      title,
+      content: transcript.text,
+      summary,
+      source: 'YouTube',
+      sourceFilename: downloadResult?.filename,
+      sourceRef: url,
+      audioFileUploadId,
+      metadata: {
+        duration: downloadResult?.duration,
+        language: transcript.language || 'en',
+        processingTime: Math.round(processingTime),
+        url,
+      },
+    });
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const locationUrl = this.formatLocation(pageId);
+    console.log(`[MediaPipeline] === Complete: ${title} (${elapsed}s) -> ${locationUrl} ===\n`);
+
+    // Cleanup
+    this.cleanupTemp(downloadResult?.filePath);
+
+    return { pageId, notionUrl: locationUrl, title, url };
+  }
+
 }
 
 module.exports = MediaPipeline;

@@ -207,6 +207,73 @@ class ObsidianClient {
     }
     return `${mins}m ${secs}s`;
   }
+
+  /**
+   * Create a note with structured Summary + Content sections.
+   * Mirrors NotionClient.createStructuredPage().
+   */
+  async createStructuredPage({ title, content, summary = null, source = 'Idea', sourceFilename = null, sourceRef = null, metadata = {} }) {
+    content = typeof content === 'string' ? content : String(content || '');
+
+    const safeTitle = this.sanitizeFilename(summary?.title || title);
+    const notePath = `${this.captureFolder}/${safeTitle}.md`;
+
+    const frontmatter = {
+      created: new Date().toISOString().slice(0, 16),
+      updated: new Date().toISOString().slice(0, 16),
+      tags: ['capture', `capture/${source.toLowerCase()}`],
+      type: source.toLowerCase(),
+      source: sourceFilename || null,
+      ...(metadata.url && { url: metadata.url }),
+      ...(metadata.processingTime && { processing_time_s: metadata.processingTime }),
+    };
+
+    const yamlLines = ['---'];
+    for (const [key, value] of Object.entries(frontmatter)) {
+      if (value === null || value === undefined) continue;
+      if (Array.isArray(value)) {
+        yamlLines.push(`${key}:`);
+        for (const item of value) yamlLines.push(`  - ${item}`);
+      } else {
+        yamlLines.push(`${key}: ${JSON.stringify(value)}`);
+      }
+    }
+    yamlLines.push('---');
+
+    const bodyParts = [`# ${title}`];
+
+    if (metadata.duration || metadata.language) {
+      const metaParts = [];
+      if (metadata.duration) metaParts.push(`Duration: ${this.formatDuration(metadata.duration)}`);
+      if (metadata.language) metaParts.push(`Language: ${metadata.language}`);
+      bodyParts.push(`> ${metaParts.join(' | ')}`);
+    }
+
+    // Summary section
+    if (summary) {
+      bodyParts.push('', '## Summary', '');
+      if (summary.summary) bodyParts.push(summary.summary);
+      if (summary.keyPoints && summary.keyPoints.length > 0) {
+        bodyParts.push('', '### Key Points');
+        for (const point of summary.keyPoints) bodyParts.push(`- ${point}`);
+      }
+      bodyParts.push('', '---');
+    }
+
+    // Full content section
+    bodyParts.push('', '## Full Transcript', '', content);
+
+    const noteContent = yamlLines.join('\n') + '\n\n' + bodyParts.join('\n');
+
+    const encodedPath = notePath.split('/').map(encodeURIComponent).join('/');
+    await this.client.put(`/vault/${encodedPath}`, noteContent, {
+      headers: { 'Content-Type': 'text/markdown' },
+    });
+
+    console.log(`[Obsidian] Created structured note: ${notePath}`);
+    return notePath;
+  }
+
 }
 
 module.exports = ObsidianClient;

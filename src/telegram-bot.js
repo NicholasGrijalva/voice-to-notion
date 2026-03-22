@@ -309,7 +309,7 @@ class TelegramBot {
     for (const url of urls) {
       const status = await ctx.reply(`Processing: ${url}`);
       try {
-        const result = await this.pipeline.ingest(url);
+        const result = await this.pipeline.ingestUrl(url);
         this.trackSource(ctx.message.message_id, result.pageId);
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
@@ -495,8 +495,91 @@ class TelegramBot {
       return;
     }
 
+    // Markdown files
+    const mdExts = /\.(md|markdown|txt)$/i;
+    if (mdExts.test(doc.file_name || '')) {
+      if (doc.file_size && doc.file_size > 5 * 1024 * 1024) {
+        return ctx.reply('Text file too large (>5MB).');
+      }
+      const status = await ctx.reply(`Processing text: ${doc.file_name}`);
+      let tempPath = null;
+      try {
+        tempPath = await this.downloadTelegramFile(ctx, doc.file_id, 'document', doc.file_name);
+        const text = fs.readFileSync(tempPath, 'utf8');
+        const firstLine = text.split('\n')[0].replace(/^#+\s*/, '').trim();
+        const title = firstLine.slice(0, 100) || doc.file_name.replace(/\.[^/.]+$/, '');
+
+        let summary = null;
+        if (this.pipeline.summarizer && text.length > 100) {
+          summary = await this.pipeline.summarizer.summarize(text, 'article', { title });
+        }
+
+        const pageId = await this.notion.createStructuredPage({
+          title: summary?.title || title,
+          content: text,
+          summary,
+          source: 'Idea',
+          sourceFilename: doc.file_name,
+          metadata: {},
+        });
+
+        this.trackSource(ctx.message.message_id, pageId);
+        await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, this.formatResult(summary?.title || title, pageId));
+      } catch (error) {
+        await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, `Failed: ${error.message}`);
+      } finally {
+        this.cleanup(tempPath);
+      }
+      return;
+    }
+
+    // PDF files
+    const pdfExts = /\.pdf$/i;
+    if (pdfExts.test(doc.file_name || '')) {
+      if (doc.file_size && doc.file_size > 50 * 1024 * 1024) {
+        return ctx.reply('PDF too large (>50MB).');
+      }
+      const status = await ctx.reply(`Processing PDF: ${doc.file_name}`);
+      let tempPath = null;
+      try {
+        tempPath = await this.downloadTelegramFile(ctx, doc.file_id, 'document', doc.file_name);
+        const pdfParse = require('pdf-parse');
+        const buffer = fs.readFileSync(tempPath);
+        const data = await pdfParse(buffer);
+
+        if (!data.text || data.text.length < 50) {
+          await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, 'PDF has no extractable text (may be image-based).');
+          return;
+        }
+
+        const pdfTitle = data.info?.Title || doc.file_name.replace(/\.pdf$/i, '');
+
+        let summary = null;
+        if (this.pipeline.summarizer && data.text.length > 100) {
+          summary = await this.pipeline.summarizer.summarize(data.text, 'pdf', { title: pdfTitle });
+        }
+
+        const pageId = await this.notion.createStructuredPage({
+          title: summary?.title || pdfTitle,
+          content: data.text,
+          summary,
+          source: 'Idea',
+          sourceFilename: doc.file_name,
+          metadata: {},
+        });
+
+        this.trackSource(ctx.message.message_id, pageId);
+        await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, this.formatResult(summary?.title || pdfTitle, pageId));
+      } catch (error) {
+        await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, `Failed: ${error.message}`);
+      } finally {
+        this.cleanup(tempPath);
+      }
+      return;
+    }
+
     if (!mediaExts.test(doc.file_name || '')) {
-      return ctx.reply(`Unsupported file type: ${doc.file_name}. Send media files, images, or URLs.`);
+      return ctx.reply(`Unsupported file type: ${doc.file_name}. Send media, images, PDFs, markdown, or URLs.`);
     }
 
     if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
