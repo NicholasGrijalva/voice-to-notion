@@ -117,7 +117,7 @@ class ScriberrClient {
   async getJobs(status = null) {
     try {
       const response = await this.client.get('/api/v1/transcription/list');
-      let jobs = response.data;
+      let jobs = response.data || [];
 
       // Normalize to array
       if (!Array.isArray(jobs)) {

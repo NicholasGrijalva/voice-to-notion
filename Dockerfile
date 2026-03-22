@@ -9,7 +9,7 @@ RUN apk add --no-cache \
     python3 \
     py3-pip \
     curl \
-    && pip3 install --no-cache-dir --break-system-packages yt-dlp
+    && pip3 install --no-cache-dir --break-system-packages yt-dlp curl_cffi
 
 # Set working directory
 WORKDIR /app

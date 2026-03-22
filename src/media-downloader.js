@@ -51,6 +51,7 @@ class MediaDownloader {
       '--print-json',            // Output JSON metadata to stdout
       '--no-simulate',           // Actually download (--print-json implies simulate otherwise)
       '--restrict-filenames',    // Safe filenames
+      '--impersonate', 'chrome',  // Bypass Cloudflare anti-bot
     ];
 
     if (audioOnly) {
