@@ -1,8 +1,8 @@
-# Voice-to-Notion/Obsidian Transcription System
+# Voice-to-Notion/Obsidian Capture System
 
-Self-hosted voice & media transcription pipeline: **Record/Download → Transcribe → Notion or Obsidian**
+Self-hosted multi-format content capture pipeline: **Capture → Extract → Summarize → Notion or Obsidian**
 
-Zero OpenAI dependency by default. Uses [Scriberr](https://github.com/rishikanthc/Scriberr) (WhisperX) for local transcription, optional [Groq](https://groq.com) cloud fallback for speed, yt-dlp for media downloads, ffmpeg for audio extraction.
+Captures voice notes, YouTube videos, articles, tweets, PDFs, and markdown via Telegram bot. Auto-summarizes with Groq Llama 3.3 70B. Uses [Scriberr](https://github.com/rishikanthc/Scriberr) (WhisperX) for local transcription, yt-dlp for media downloads, Mozilla Readability for article extraction.
 
 ## Quick Start
 
@@ -41,6 +41,14 @@ docker compose logs -f notion-worker
 - **State persistence** — survives restarts, tracks synced jobs
 - **macOS persistence** — launchd agent keeps stack alive through reboots/SSH disconnects
 - **OpenClaw skill** — manage stack via Telegram bot or OpenClaw agent
+- **LLM auto-summarization** — Groq Llama 3.3 70B generates structured summaries with key points
+- **Structured page output** — Summary + Key Points + Full Transcript sections
+- **Article/webpage capture** — Mozilla Readability extracts clean text from any URL
+- **Twitter/X capture** — FxTwitter API extracts tweet text and thread content
+- **Perplexity capture** — extracts research Q&A from Perplexity AI pages
+- **PDF extraction** — text extraction via pdf-parse, sent as structured page
+- **Markdown/text files** — send .md, .txt, .markdown files via Telegram
+- **Smart URL routing** — regex-based content detection routes to correct extractor
 
 ## Architecture
 

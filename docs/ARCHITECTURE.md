@@ -521,3 +521,65 @@ The Docker healthcheck (`node -e "console.log('healthy')"`) only verifies the No
 `scripts/launchd-start.sh` has a hardcoded path (`/Users/nick/Downloads/voice-to-notion`). This needs to be updated for any deployment to a different location.
 
 **Location:** [`scripts/launchd-start.sh`](../scripts/launchd-start.sh) line 5
+
+## v3.0: Multi-Format Capture + Auto-Summarization
+
+### New Modules
+
+| Module | Purpose |
+|---|---|
+| `summarizer.js` | LLM summarization via Groq Llama 3.3 70B. Content-type-aware prompts for video, article, tweet, PDF. Returns { title, keyPoints[], summary }. |
+| `content-router.js` | Regex-based URL classification. Routes to correct extractor: YouTube, Twitter/X, PDF, Perplexity, LinkedIn, general webpage. |
+| `web-scraper.js` | Article extraction via Mozilla Readability + jsdom. PDF extraction via pdf-parse. |
+| `twitter-extractor.js` | Tweet/thread capture via free FxTwitter API (api.fxtwitter.com). |
+
+### Enhanced Pipeline Flow
+
+```
+User sends URL via Telegram
+  |
+  v
+ContentRouter.detect(url)
+  |
+  +-- youtube ---------> yt-transcript.js (existing) + yt-dlp download
+  +-- twitter ---------> twitter-extractor.js (FxTwitter API)
+  +-- pdf --------------> web-scraper.extractPdf() (pdf-parse)
+  +-- perplexity/web ---> web-scraper.extract() (Readability + jsdom)
+  +-- media (other) ----> yt-dlp download (existing)
+  |
+  v
+Summarizer.summarize(content, contentType)
+  |
+  v
+notion.createStructuredPage() / obsidian.createStructuredPage()
+  |
+  Page structure:
+  - Metadata callout (duration, language)
+  - Audio/Image block (if applicable)
+  - ## Summary (LLM-generated)
+  - ### Key Points (bulleted list)
+  - ---
+  - ## Full Transcript (verbatim content)
+```
+
+### Telegram Bot Document Handling
+
+| Extension | Handler |
+|---|---|
+| .md, .markdown, .txt | Read as UTF-8, first heading = title, summarize + save |
+| .pdf | pdf-parse text extraction, summarize + save |
+| .jpg, .png, .webp, .heic | Gemini OCR (existing) |
+| .mp3, .mp4, .wav, etc. | Audio/video pipeline (existing) |
+
+### Storage Abstraction
+
+Both `NotionClient` and `ObsidianClient` implement the same interface:
+
+- `createTranscriptPage()` -- legacy flat page (still works)
+- `createStructuredPage()` -- new structured Summary + Transcript format
+- `appendBlocks()` -- for reply chain "My Take" sections
+- `uploadFile()` -- Notion: FileUpload API; Obsidian: returns null (no-op)
+- `splitText()` -- chunk text for API limits
+- `testConnection()` -- health check
+
+The Telegram bot's `/mode` command toggles between clients at runtime.
