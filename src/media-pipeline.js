@@ -164,7 +164,7 @@ class MediaPipeline {
       const jobs = JSON.parse(content);
       const items = Array.isArray(jobs) ? jobs : [jobs];
       for (const item of items) {
-        await this.ingest(item.url, item.options || {});
+        await this.ingestUrl(item.url, item.options || {});
       }
     } else {
       // .txt or .url — one URL per line
@@ -173,7 +173,7 @@ class MediaPipeline {
         .filter(l => l && !l.startsWith('#') && l.startsWith('http'));
 
       for (const url of urls) {
-        await this.ingest(url);
+        await this.ingestUrl(url);
       }
     }
   }
@@ -588,6 +588,10 @@ class MediaPipeline {
       return { pageId, notionUrl: locationUrl, title, url };
 
     } catch (error) {
+      if (extracted && extracted.content) {
+        // Extraction succeeded but downstream failed (summarization, page creation) -- don't discard work
+        throw error;
+      }
       console.error(`[MediaPipeline] Smart ingest failed: ${error.message}`);
       // Last resort: try standard ingest
       return this.ingest(url, opts);

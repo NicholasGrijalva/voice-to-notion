@@ -65,7 +65,7 @@ if (isDirect) {
   });
 
   console.log(`Ingesting URL directly: ${url}`);
-  scriberr.init().then(() => notion.ensureTypeOptions()).then(() => pipeline.ingest(url))
+  scriberr.init().then(() => notion.ensureTypeOptions()).then(() => pipeline.ingestUrl(url))
     .then(result => {
       console.log(`\nDone! ${result.notionUrl}`);
       process.exit(0);
