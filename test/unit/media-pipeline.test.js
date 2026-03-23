@@ -66,6 +66,7 @@ describe('MediaPipeline', () => {
     mockNotion = {
       uploadFile: vi.fn().mockResolvedValue('upload-id'),
       createTranscriptPage: vi.fn().mockResolvedValue('page-abc-123'),
+      createStructuredPage: vi.fn().mockResolvedValue('page-abc-123'),
     };
 
     mockScriberr = {
@@ -392,13 +393,13 @@ describe('MediaPipeline', () => {
       expect(ingestFileSpy).toHaveBeenCalledWith('/test/inbox/video.mp4');
     });
 
-    it('should route .txt files to URL parsing and ingest per URL', async () => {
+    it('should route .txt files to URL parsing and ingestUrl per URL', async () => {
       fs.readFileSync.mockReturnValue('https://youtube.com/watch?v=test1\nhttps://youtube.com/watch?v=test2');
-      const ingestSpy = vi.spyOn(pipeline, 'ingest').mockResolvedValue();
+      const ingestUrlSpy = vi.spyOn(pipeline, 'ingestUrl').mockResolvedValue();
 
       await pipeline.processFile('urls.txt');
 
-      expect(ingestSpy).toHaveBeenCalledTimes(2);
+      expect(ingestUrlSpy).toHaveBeenCalledTimes(2);
     });
 
     it('should route .json files to JSON parsing - array', async () => {
@@ -406,29 +407,29 @@ describe('MediaPipeline', () => {
         { url: 'https://example.com/1' },
         { url: 'https://example.com/2' },
       ]));
-      const ingestSpy = vi.spyOn(pipeline, 'ingest').mockResolvedValue();
+      const ingestUrlSpy = vi.spyOn(pipeline, 'ingestUrl').mockResolvedValue();
 
       await pipeline.processFile('batch.json');
 
-      expect(ingestSpy).toHaveBeenCalledTimes(2);
+      expect(ingestUrlSpy).toHaveBeenCalledTimes(2);
     });
 
     it('should route .json files to JSON parsing - single object', async () => {
       fs.readFileSync.mockReturnValue(JSON.stringify({ url: 'https://example.com/1' }));
-      const ingestSpy = vi.spyOn(pipeline, 'ingest').mockResolvedValue();
+      const ingestUrlSpy = vi.spyOn(pipeline, 'ingestUrl').mockResolvedValue();
 
       await pipeline.processFile('single.json');
 
-      expect(ingestSpy).toHaveBeenCalledTimes(1);
+      expect(ingestUrlSpy).toHaveBeenCalledTimes(1);
     });
 
     it('should filter out empty lines, comments, and non-http lines', async () => {
       fs.readFileSync.mockReturnValue('https://valid.com\n\n# comment\nnot-a-url\nhttps://also-valid.com');
-      const ingestSpy = vi.spyOn(pipeline, 'ingest').mockResolvedValue();
+      const ingestUrlSpy = vi.spyOn(pipeline, 'ingestUrl').mockResolvedValue();
 
       await pipeline.processFile('urls.txt');
 
-      expect(ingestSpy).toHaveBeenCalledTimes(2);
+      expect(ingestUrlSpy).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -636,7 +637,7 @@ describe('MediaPipeline', () => {
 
       await pipeline.ingestFile('/test/inbox/audio.mp3');
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ source: 'Audio' })
       );
     });
@@ -646,7 +647,7 @@ describe('MediaPipeline', () => {
 
       await pipeline.ingestFile('/test/inbox/video.mp4');
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ source: 'Video' })
       );
     });
@@ -656,7 +657,7 @@ describe('MediaPipeline', () => {
 
       await pipeline.ingestFile('/test/inbox/my_recording-file.mp3');
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'my recording file' })
       );
     });
@@ -677,7 +678,7 @@ describe('MediaPipeline', () => {
       // .mp3 should be detected as audio via fallback regex
       await pipeline.ingestFile('/test/inbox/audio.mp3');
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ source: 'Audio' })
       );
     });
@@ -687,7 +688,7 @@ describe('MediaPipeline', () => {
 
       await pipeline.ingestFile('/test/inbox/audio.mp3', { title: 'Custom Title' });
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'Custom Title' })
       );
     });
@@ -700,7 +701,7 @@ describe('MediaPipeline', () => {
       await pipeline.ingestFile('/test/inbox/audio.mp3');
 
       expect(mockGroq.generateTitle).toHaveBeenCalledWith('x'.repeat(60));
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'AI Generated Title' })
       );
     });
@@ -712,7 +713,7 @@ describe('MediaPipeline', () => {
 
       await pipeline.ingestFile('/test/inbox/my_recording.mp3');
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'my recording' })
       );
     });
@@ -736,17 +737,17 @@ describe('MediaPipeline', () => {
 
       await pipeline.ingestFile('/test/inbox/audio.mp3');
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'audio' })
       );
     });
 
-    it('should pass sourceRef (filePath) to createTranscriptPage', async () => {
+    it('should pass sourceRef (filePath) to createStructuredPage', async () => {
       mockExtractor.isAudioOnly.mockResolvedValue(true);
 
       await pipeline.ingestFile('/test/inbox/audio.mp3');
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ sourceRef: '/test/inbox/audio.mp3' })
       );
     });

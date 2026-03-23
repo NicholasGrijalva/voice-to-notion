@@ -44,6 +44,11 @@ describe('TelegramBot', () => {
         notionUrl: 'https://notion.so/page123',
         pageId: 'page-123',
       }),
+      ingestUrl: vi.fn().mockResolvedValue({
+        title: 'Test Result',
+        notionUrl: 'https://notion.so/page123',
+        pageId: 'page-123',
+      }),
       ingestFile: vi.fn().mockResolvedValue({
         title: 'Test File Result',
         notionUrl: 'https://notion.so/page456',
@@ -77,6 +82,7 @@ describe('TelegramBot', () => {
     mockBotInst = {
       use: vi.fn(),
       start: vi.fn(),
+      command: vi.fn(),
       on: vi.fn(),
       launch: vi.fn(),
       stop: vi.fn(),
@@ -244,12 +250,12 @@ describe('TelegramBot', () => {
   });
 
   describe('handleText()', () => {
-    it('should extract URLs and call pipeline.ingest() for each', async () => {
+    it('should extract URLs and call pipeline.ingestUrl() for each', async () => {
       const ctx = makeCtx({ message: { text: 'Check https://example.com' } });
 
       await bot.handleText(ctx);
 
-      expect(mockPipeline.ingest).toHaveBeenCalledWith('https://example.com');
+      expect(mockPipeline.ingestUrl).toHaveBeenCalledWith('https://example.com');
     });
 
     it('should reply with help when no URLs found', async () => {
@@ -258,7 +264,7 @@ describe('TelegramBot', () => {
       await bot.handleText(ctx);
 
       expect(ctx.reply).toHaveBeenCalledWith(expect.stringContaining('No URLs found'));
-      expect(mockPipeline.ingest).not.toHaveBeenCalled();
+      expect(mockPipeline.ingestUrl).not.toHaveBeenCalled();
     });
 
     it('should edit message with result on success', async () => {
@@ -268,12 +274,12 @@ describe('TelegramBot', () => {
 
       expect(ctx.telegram.editMessageText).toHaveBeenCalledWith(
         456, 1, null,
-        expect.stringContaining('Done: Test Result')
+        expect.stringContaining('Saved to Notion: Test Result')
       );
     });
 
     it('should edit message with error on failure', async () => {
-      mockPipeline.ingest.mockRejectedValue(new Error('Download failed'));
+      mockPipeline.ingestUrl.mockRejectedValue(new Error('Download failed'));
       const ctx = makeCtx({ message: { text: 'https://example.com' } });
 
       await bot.handleText(ctx);
@@ -291,9 +297,9 @@ describe('TelegramBot', () => {
 
       await bot.handleText(ctx);
 
-      expect(mockPipeline.ingest).toHaveBeenCalledTimes(2);
-      expect(mockPipeline.ingest).toHaveBeenCalledWith('https://first.com');
-      expect(mockPipeline.ingest).toHaveBeenCalledWith('https://second.com');
+      expect(mockPipeline.ingestUrl).toHaveBeenCalledTimes(2);
+      expect(mockPipeline.ingestUrl).toHaveBeenCalledWith('https://first.com');
+      expect(mockPipeline.ingestUrl).toHaveBeenCalledWith('https://second.com');
     });
   });
 
@@ -433,7 +439,7 @@ describe('TelegramBot', () => {
   describe('handleDocument()', () => {
     it('should reject non-media files with message', async () => {
       const ctx = makeCtx({
-        message: { document: { file_name: 'report.pdf', file_size: 1000 } },
+        message: { document: { file_name: 'report.docx', file_size: 1000 } },
       });
 
       await bot.handleDocument(ctx);
@@ -890,7 +896,7 @@ describe('TelegramBot', () => {
         await bot.handleText(ctx);
 
         // Should NOT process the URL since it's a reply chain
-        expect(mockPipeline.ingest).not.toHaveBeenCalled();
+        expect(mockPipeline.ingestUrl).not.toHaveBeenCalled();
         // Should have appended blocks to existing page instead
         expect(mockNotion.appendBlocks).toHaveBeenCalledWith(TRACKED_PAGE_ID, expect.any(Array));
       });

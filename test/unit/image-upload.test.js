@@ -161,7 +161,7 @@ describe('Image Upload Feature', () => {
       );
     });
 
-    it('should show "Done (image upload failed)" when upload fails', async () => {
+    it('should still show result when image upload fails', async () => {
       mockNotion.uploadFile.mockRejectedValue(new Error('Upload failed'));
       const ctx = makeCtx({
         message: { photo: [{ file_id: 'p1', width: 800 }] },
@@ -171,11 +171,11 @@ describe('Image Upload Feature', () => {
 
       expect(ctx.telegram.editMessageText).toHaveBeenCalledWith(
         456, 1, null,
-        expect.stringContaining('Done (image upload failed)')
+        expect.stringContaining('Saved to Notion: Test Heading')
       );
     });
 
-    it('should show "Done:" when upload succeeds', async () => {
+    it('should show result with title when upload succeeds', async () => {
       const ctx = makeCtx({
         message: { photo: [{ file_id: 'p1', width: 800 }] },
       });
@@ -184,7 +184,7 @@ describe('Image Upload Feature', () => {
 
       expect(ctx.telegram.editMessageText).toHaveBeenCalledWith(
         456, 1, null,
-        expect.stringMatching(/^Done: Test Heading/)
+        expect.stringContaining('Saved to Notion: Test Heading')
       );
     });
 
@@ -262,7 +262,7 @@ describe('Image Upload Feature', () => {
       );
     });
 
-    it('should show "Done (image upload failed)" when upload fails', async () => {
+    it('should still show result when image upload fails', async () => {
       mockNotion.uploadFile.mockRejectedValue(new Error('API error'));
       const ctx = makeCtx({
         message: { document: { file_id: 'doc-1', file_name: 'notes.jpg', file_size: 5000 } },
@@ -272,7 +272,7 @@ describe('Image Upload Feature', () => {
 
       expect(ctx.telegram.editMessageText).toHaveBeenCalledWith(
         456, 1, null,
-        expect.stringContaining('Done (image upload failed)')
+        expect.stringContaining('Saved to Notion: Doc Image')
       );
     });
 
