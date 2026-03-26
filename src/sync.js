@@ -19,7 +19,7 @@ class SyncWorker {
     this.pollInterval = pollInterval;
     this.syncedJobs = new Set();
     this.failedJobs = new Map(); // Track failed jobs with retry count and next-retry time
-    this.maxRetries = parseInt(process.env.MAX_SYNC_RETRIES, 10) || 0; // 0 = unlimited (exponential backoff)
+    this.maxRetries = parseInt(process.env.MAX_SYNC_RETRIES, 10) || 10; // default 10 retries (~8.5min total backoff before abandon)
     this.baseBackoffMs = pollInterval; // first retry waits 1 cycle
     this.isRunning = false;
     this.interval = null;
