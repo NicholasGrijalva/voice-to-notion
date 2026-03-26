@@ -18,8 +18,9 @@ class SyncWorker {
     this.notion = notionClient;
     this.pollInterval = pollInterval;
     this.syncedJobs = new Set();
-    this.failedJobs = new Map(); // Track failed jobs with retry count
-    this.maxRetries = 3;
+    this.failedJobs = new Map(); // Track failed jobs with retry count and next-retry time
+    this.maxRetries = parseInt(process.env.MAX_SYNC_RETRIES, 10) || 0; // 0 = unlimited (exponential backoff)
+    this.baseBackoffMs = pollInterval; // first retry waits 1 cycle
     this.isRunning = false;
     this.interval = null;
   }
@@ -39,9 +40,16 @@ class SyncWorker {
         const state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
         this.syncedJobs = new Set(state.syncedJobs || []);
 
-        // Load failed jobs with their retry counts
+        // Load failed jobs with their retry state
         if (state.failedJobs) {
-          this.failedJobs = new Map(Object.entries(state.failedJobs));
+          for (const [id, val] of Object.entries(state.failedJobs)) {
+            // Migrate old format (plain number) to new format ({ count, nextRetry })
+            if (typeof val === 'number') {
+              this.failedJobs.set(id, { count: val, nextRetry: 0 }); // retry immediately
+            } else {
+              this.failedJobs.set(id, val);
+            }
+          }
         }
 
         console.log(`[SyncWorker] Loaded state: ${this.syncedJobs.size} synced, ${this.failedJobs.size} failed`);
@@ -132,13 +140,20 @@ class SyncWorker {
           continue;
         }
 
-        // Check if job has exceeded retry limit
-        const retryCount = this.failedJobs.get(jobId) || 0;
-        if (retryCount >= this.maxRetries) {
-          console.log(`[SyncWorker] Job ${jobId} exceeded retry limit, skipping`);
-          skipped++;
-          continue;
+        // Check retry state: exponential backoff (or hard cap if MAX_SYNC_RETRIES > 0)
+        const failState = this.failedJobs.get(jobId);
+        if (failState) {
+          if (this.maxRetries > 0 && failState.count >= this.maxRetries) {
+            console.log(`[SyncWorker] Job ${jobId} exceeded retry limit (${this.maxRetries}), skipping`);
+            skipped++;
+            continue;
+          }
+          if (Date.now() < failState.nextRetry) {
+            skipped++; // backoff period not elapsed yet, silently skip
+            continue;
+          }
         }
+        const retryCount = failState?.count || 0;
 
         try {
           await this.syncJob(job);
@@ -148,8 +163,10 @@ class SyncWorker {
           this.saveState();
           console.log(`[SyncWorker] ✓ Synced job ${jobId}`);
         } catch (error) {
-          console.error(`[SyncWorker] ✗ Failed to sync job ${jobId}:`, error.message);
-          this.failedJobs.set(jobId, retryCount + 1);
+          const newCount = retryCount + 1;
+          const backoff = Math.min(this.baseBackoffMs * Math.pow(2, newCount - 1), 3600000); // cap at 1hr
+          console.error(`[SyncWorker] ✗ Failed to sync job ${jobId} (attempt ${newCount}, next retry in ${Math.round(backoff / 1000)}s):`, error.message);
+          this.failedJobs.set(jobId, { count: newCount, nextRetry: Date.now() + backoff });
           this.saveState();
           failed++;
         }
