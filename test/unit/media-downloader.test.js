@@ -60,6 +60,11 @@ describe('MediaDownloader', () => {
       new MediaDownloader();
       expect(fs.mkdirSync).not.toHaveBeenCalled();
     });
+
+    it('should default canImpersonate to false', () => {
+      const d = new MediaDownloader();
+      expect(d.canImpersonate).toBe(false);
+    });
   });
 
   describe('download()', () => {
@@ -81,6 +86,23 @@ describe('MediaDownloader', () => {
       expect(args).toContain('--no-playlist');
       expect(args).toContain('--print-json');
       expect(args).toContain('--no-simulate');
+    });
+
+    it('should not include --impersonate when canImpersonate is false', async () => {
+      downloader.canImpersonate = false;
+      await downloader.download('https://youtube.com/watch?v=test');
+
+      const args = child_process.execFile.mock.calls[0][1];
+      expect(args).not.toContain('--impersonate');
+    });
+
+    it('should include --impersonate chrome when canImpersonate is true', async () => {
+      downloader.canImpersonate = true;
+      await downloader.download('https://youtube.com/watch?v=test');
+
+      const args = child_process.execFile.mock.calls[0][1];
+      expect(args).toContain('--impersonate');
+      expect(args).toContain('chrome');
     });
 
     it('should build correct yt-dlp args for video download', async () => {

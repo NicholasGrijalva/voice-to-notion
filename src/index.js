@@ -6,6 +6,55 @@
  *   3. Telegram Bot: Mobile capture layer → URLs/voice/media → Notion
  */
 
+// --help flag
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  console.log(`
+Voice-to-Notion Worker v2.1
+Multi-format content capture pipeline: Capture -> Extract -> Summarize -> Notion/Obsidian
+
+USAGE
+  node src/index.js [options]
+
+OPTIONS
+  --help, -h    Show this help message
+
+PIPELINES
+  1. Scriberr Sync    Polls Scriberr for completed transcripts (with Groq fallback)
+  2. Media Pipeline    Watches inbox for URLs/media files (yt-dlp + ffmpeg)
+  3. Telegram Bot      Mobile capture: URLs, voice, photos, media files
+  4. Admin API         HTTP server for remote state management (default port 9200)
+
+ADMIN API ENDPOINTS
+  GET  /health             Uptime and pipeline status
+  GET  /state              Synced/failed job counts and retry timers
+  POST /retry/:jobId       Reset a failed job for immediate retry
+  POST /retry-all          Reset all failed jobs
+  POST /abandon/:jobId     Permanently skip a job
+
+ENVIRONMENT
+  Required:
+    SCRIBERR_API_URL           Scriberr server URL
+    SCRIBERR_USERNAME          Scriberr login username
+    SCRIBERR_PASSWORD          Scriberr login password
+    NOTION_API_KEY             Notion integration secret
+    NOTION_DATABASE_ID         Target Notion database ID
+
+  Optional:
+    DESTINATION                notion (default) or obsidian
+    GROQ_API_KEY               Groq API key (cloud transcription + titles)
+    TELEGRAM_BOT_TOKEN         Telegram bot token (mobile capture)
+    GEMINI_API_KEY             Gemini API key (photo OCR)
+    POLL_INTERVAL_SECONDS      Scriberr poll interval (default: 30)
+    MAX_SYNC_RETRIES           Max retries for failed syncs (default: 10, 0=unlimited)
+    ADMIN_PORT                 Admin API port (default: 9200)
+    ENABLE_MEDIA_PIPELINE      Enable media pipeline (default: true)
+    AUDIO_FORMAT               Output format: mp3/m4a/wav (default: mp3)
+
+  See .env.example for full configuration reference.
+`);
+  process.exit(0);
+}
+
 require('dotenv').config();
 
 const ScriberrClient = require('./scriberr');

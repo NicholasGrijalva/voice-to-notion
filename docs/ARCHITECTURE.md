@@ -4,11 +4,12 @@
 
 Voice-to-Notion is a self-hosted media transcription pipeline that captures voice memos, URLs, photos, and media files from multiple input sources and writes structured notes to Notion or Obsidian. It runs as a single Node.js worker process inside a Docker container alongside a Scriberr (WhisperX) transcription server.
 
-Three pipelines run in parallel inside the worker:
+Four pipelines + an admin server run in parallel inside the worker:
 
-1. **Scriberr Sync** -- polls Scriberr for completed transcripts and syncs them to Notion
+1. **Scriberr Sync** -- polls Scriberr for completed transcripts and syncs them to Notion (with Groq fallback for empty transcripts)
 2. **Media Pipeline** -- watches an inbox directory for URLs and media files, downloads/transcribes them
 3. **Telegram Bot** -- mobile capture layer accepting URLs, voice notes, photos, and media files
+4. **Admin API** -- lightweight HTTP server for remote state management (retry, abandon, health check)
 
 ```
                            INGESTION SOURCES
@@ -62,6 +63,7 @@ Three pipelines run in parallel inside the worker:
 | Telegram | Telegraf (long-polling) |
 | Destination (primary) | Notion API (FileUpload API for attachments) |
 | Destination (alt) | Obsidian Local REST API |
+| Admin API | Node built-in `http` module |
 | Container orchestration | Docker Compose |
 | macOS persistence | launchd |
 
@@ -76,9 +78,10 @@ voice-to-notion/
     scriberr.js           Scriberr API client (JWT auth, auto-refresh)
     notion.js             Notion API client (page creation, file uploads)
     obsidian.js           Obsidian vault client (Local REST API)
-    sync.js               Pipeline 1: Scriberr poll/sync worker
+    sync.js               Pipeline 1: Scriberr poll/sync worker (+ Groq fallback)
     media-pipeline.js     Pipeline 2: URL + file ingestion orchestrator
     telegram-bot.js       Pipeline 3: Telegram mobile capture
+    admin.js              Pipeline 4: Admin HTTP API (state management)
     groq-transcriber.js   Groq Whisper + LLM (transcription + titles)
     media-downloader.js   yt-dlp wrapper
     audio-extractor.js    ffmpeg wrapper
@@ -119,15 +122,20 @@ SyncWorker.sync()
     +-- Filter: completed, not already synced, under retry limit
     +-- For each job:
     |     +-- Fetch transcript text (GET /api/v1/transcription/{id}/transcript)
-    |     +-- Download audio file (GET /api/v1/transcription/{id}/audio)
-    |     +-- Upload audio to Notion (FileUpload API)
-    |     +-- Create Notion page with transcript + audio block
+    |     +-- If empty + Groq available:
+    |     |     +-- Download audio (GET /api/v1/transcription/{id}/audio)
+    |     |     +-- Re-transcribe via Groq Whisper API
+    |     +-- Download audio file for attachment
+    |     +-- Upload audio to Notion (FileUpload API) or Obsidian vault
+    |     +-- Create page with transcript + audio block/embed
     |     +-- Mark as synced in state file
     |
     +-- Save state to data/.sync-state.json
 ```
 
-**State persistence:** Synced job IDs and failed job retry counts are stored in `.sync-state.json`. Jobs that fail 3 times are permanently skipped.
+**Groq fallback:** When Scriberr returns an empty transcript (e.g. Whisper produced nothing from silent/low-quality audio), the sync worker downloads the audio file and re-transcribes via Groq's Whisper API. This catches cases where local Whisper fails but cloud Whisper succeeds.
+
+**State persistence:** Synced job IDs and failed job retry counts (with exponential backoff) are stored in `.sync-state.json`. Jobs that fail 10 times (default, configurable via `MAX_SYNC_RETRIES`) are permanently skipped. State can be managed remotely via the Admin API.
 
 **Intended input path:** iOS Voice Memos via Shortcuts app, or drag-drop into Scriberr's web UI.
 
@@ -241,6 +249,31 @@ The `/mode` command switches the active write destination between Notion and Obs
 
 ---
 
+## Pipeline 4: Admin API
+
+**Module:** `src/admin.js` (AdminServer class)
+
+Lightweight HTTP server using Node's built-in `http` module (zero dependencies). Provides remote state management without SSH access.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Uptime, start time, pipeline running status |
+| `/state` | GET | Full state: synced IDs, failed jobs with retry counts and time-to-retry |
+| `/retry/:jobId` | POST | Remove job from failed queue so it retries on next sync cycle |
+| `/retry-all` | POST | Clear all failed jobs for immediate retry |
+| `/abandon/:jobId` | POST | Move job from failed to synced (permanently skip) |
+
+**Configuration:** `ADMIN_PORT` env var (default: 9200).
+
+**Security:** The admin API has no authentication -- it's intended for use on localhost or behind a reverse proxy / SSH tunnel. Do not expose port 9200 directly to the internet.
+
+**HTTPS:** For remote access, use one of:
+- SSH tunnel: `ssh -L 9200:localhost:9200 user@host`
+- Reverse proxy: nginx or Caddy with TLS termination
+- Tailscale / WireGuard: access via private network
+
+---
+
 ## External Service Dependencies
 
 | Service | Role | Required? | Module |
@@ -334,6 +367,8 @@ All configuration is via environment variables (`.env` file). Grouped by service
 | `MEDIA_PROCESSED_PATH` | Host path for processed files | `./processed` |
 | `STATE_FILE` | Sync state file path | `./data/.sync-state.json` |
 | `TEMP_DIR` | Temporary file directory | `/tmp/media-pipeline` |
+| `MAX_SYNC_RETRIES` | Max retries before abandoning a failed sync job (0=unlimited) | `10` |
+| `ADMIN_PORT` | Admin API HTTP port | `9200` |
 
 ---
 
@@ -454,6 +489,7 @@ Tests use **Vitest** with the configuration in `vitest.config.js`:
 ```
 test/
   unit/
+    admin.test.js
     audio-extractor.test.js
     groq-transcriber.test.js
     image-upload.test.js
@@ -498,9 +534,9 @@ The Telegram reply chain tracking (`pendingSources` Map) is stored in memory wit
 
 ### Obsidian File Uploads
 
-The Obsidian client's `uploadFile()` method is a no-op stub that returns `null`. Audio and image attachments are silently skipped when writing to Obsidian. The note content (transcript text) is still written, but without embedded media.
+The Obsidian client uploads audio files to the vault via the Local REST API's `PUT /vault/` endpoint. Files are stored in `<capture_folder>/attachments/` and embedded in notes as `![[filename.mp3]]`. Obsidian natively renders audio embeds as playable audio players.
 
-**Location:** [`src/obsidian.js`](../src/obsidian.js) line 145
+Image attachments from photo OCR are not yet uploaded to Obsidian (only the extracted text is included).
 
 ### No Concurrent Processing
 
@@ -578,7 +614,7 @@ Both `NotionClient` and `ObsidianClient` implement the same interface:
 - `createTranscriptPage()` -- legacy flat page (still works)
 - `createStructuredPage()` -- new structured Summary + Transcript format
 - `appendBlocks()` -- for reply chain "My Take" sections
-- `uploadFile()` -- Notion: FileUpload API; Obsidian: returns null (no-op)
+- `uploadFile()` -- Notion: FileUpload API; Obsidian: PUT to vault attachments folder
 - `splitText()` -- chunk text for API limits
 - `testConnection()` -- health check
 

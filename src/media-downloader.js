@@ -13,7 +13,27 @@ class MediaDownloader {
     this.ytdlpPath = options.ytdlpPath || 'yt-dlp';
     this.maxFileSize = options.maxFileSize || '500M';
     this.timeout = options.timeout || 600000; // 10 min default
+    this.canImpersonate = false;
     this.ensureDir(this.outputDir);
+    if (process.env.NODE_ENV !== 'test') {
+      this.detectImpersonate();
+    }
+  }
+
+  /**
+   * Check if yt-dlp has curl_cffi for impersonation support.
+   * Non-blocking -- sets this.canImpersonate async.
+   */
+  detectImpersonate() {
+    const { execFile: exec } = require('child_process');
+    exec(this.ytdlpPath, ['--list-impersonate-targets'], { timeout: 5000 }, (err, stdout) => {
+      if (!err && stdout && !stdout.includes('(unavailable)')) {
+        this.canImpersonate = true;
+        console.log('[MediaDownloader] Impersonation: enabled (curl_cffi available)');
+      } else {
+        console.log('[MediaDownloader] Impersonation: disabled (install curl_cffi for anti-bot bypass)');
+      }
+    });
   }
 
   ensureDir(dir) {
@@ -51,8 +71,12 @@ class MediaDownloader {
       '--print-json',            // Output JSON metadata to stdout
       '--no-simulate',           // Actually download (--print-json implies simulate otherwise)
       '--restrict-filenames',    // Safe filenames
-      '--impersonate', 'chrome',  // Bypass Cloudflare anti-bot
     ];
+
+    // Impersonate Chrome to bypass anti-bot (requires curl_cffi)
+    if (this.canImpersonate) {
+      args.push('--impersonate', 'chrome');
+    }
 
     if (audioOnly) {
       args.push(

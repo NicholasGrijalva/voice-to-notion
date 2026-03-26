@@ -38,6 +38,9 @@ docker compose logs -f notion-worker
 - **Local file ingestion** — drop mp3/mp4/mov/wav files directly into inbox, or use CLI
 - **File-based inbox** — drop a .txt with URLs or media files, worker handles the rest
 - **One-command deployment** with Docker Compose
+- **Groq transcript fallback** — when Scriberr returns empty, auto-retranscribes via Groq Whisper
+- **Admin API** — HTTP endpoints for remote state management (retry, abandon, health check)
+- **Obsidian audio attachments** — audio files embedded as `![[audio.mp3]]` in vault notes
 - **State persistence** — survives restarts, tracks synced jobs
 - **macOS persistence** — launchd agent keeps stack alive through reboots/SSH disconnects
 - **OpenClaw skill** — manage stack via Telegram bot or OpenClaw agent
@@ -108,7 +111,18 @@ Pipeline 4: Reply Chain (annotation layer)
 │ text/photo   │     │             │     │ Notion page │
 └─────────────┘     └─────────────┘     └─────────────┘
 
+Pipeline 5: Admin API (remote state management)
+┌─────────────────────────────────────────────────────────────────┐
+│  GET  /health           → uptime + pipeline status              │
+│  GET  /state            → synced/failed counts + retry timers   │
+│  POST /retry/:jobId     → reset a failed job for immediate retry│
+│  POST /retry-all        → reset all failed jobs                 │
+│  POST /abandon/:jobId   → permanently skip a job                │
+│  Default: http://localhost:9200 (configurable via ADMIN_PORT)   │
+└─────────────────────────────────────────────────────────────────┘
+
 Transcription routing: Groq (if GROQ_API_KEY set, <25MB) → Scriberr (local fallback)
+Scriberr sync fallback: If Scriberr transcript is empty, downloads audio and retranscribes via Groq
 Title generation: Groq LLM (llama-3.3-70b) generates titles from transcript content
 OCR: Gemini 2.5 Flash (requires GEMINI_API_KEY)
 ```
@@ -371,6 +385,49 @@ Requires Obsidian running with the [Local REST API](https://github.com/coddingto
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather | (optional) |
 | `TELEGRAM_ALLOWED_USERS` | Comma-separated Telegram user IDs | (optional) |
 | `GEMINI_API_KEY` | Google Gemini API key for photo OCR | (optional) |
+| `MAX_SYNC_RETRIES` | Max retries before abandoning a failed job | 10 |
+| `ADMIN_PORT` | Admin API HTTP port | 9200 |
+
+## Admin API
+
+The worker runs a lightweight HTTP admin server for remote state management. Default port: **9200** (configurable via `ADMIN_PORT`).
+
+```bash
+# Check worker health
+curl localhost:9200/health
+
+# View sync state (synced/failed counts, retry timers)
+curl localhost:9200/state
+
+# Retry a specific failed job immediately
+curl -X POST localhost:9200/retry/<jobId>
+
+# Retry all failed jobs
+curl -X POST localhost:9200/retry-all
+
+# Permanently skip a job (moves to synced)
+curl -X POST localhost:9200/abandon/<jobId>
+```
+
+When deploying remotely, expose this port to manage the worker without SSH. For HTTPS, place behind a reverse proxy (nginx, Caddy) or SSH tunnel:
+
+```bash
+# SSH tunnel from your laptop to remote worker
+ssh -L 9200:localhost:9200 user@remote-host
+
+# Then locally:
+curl localhost:9200/state
+```
+
+## CLI
+
+```bash
+# Show all options and environment variables
+node src/index.js --help
+
+# Start the worker
+node src/index.js
+```
 
 ## Troubleshooting
 
@@ -467,9 +524,10 @@ voice-to-notion/
 │   ├── scriberr.js         # Scriberr API client
 │   ├── notion.js           # Notion API client (with file upload)
 │   ├── obsidian.js         # Obsidian vault client (via Local REST API)
-│   ├── sync.js             # Pipeline 1: Scriberr poll/sync worker
+│   ├── sync.js             # Pipeline 1: Scriberr poll/sync worker (+ Groq fallback)
 │   ├── media-pipeline.js   # Pipeline 2: Orchestrator (inbox → download → transcribe → Notion)
 │   ├── telegram-bot.js     # Pipeline 3: Telegram mobile capture (photo OCR + reply chain)
+│   ├── admin.js            # Pipeline 4: Admin API (remote state management, port 9200)
 │   ├── ocr.js              # Gemini 2.5 Flash image OCR
 │   ├── groq-transcriber.js # Groq Whisper + LLM client (transcription + title generation)
 │   ├── media-downloader.js # yt-dlp wrapper
