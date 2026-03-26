@@ -539,6 +539,44 @@ describe('ScriberrClient', () => {
       const result = await client.downloadAudioFile('job-1', '/tmp');
       expect(result.filename).toContain('audio_job-1');
     });
+
+    it('should append extension from content-type when filename has none', async () => {
+      mockAxiosClient.get
+        .mockResolvedValueOnce({ data: { filename: 'audio_noext' } })
+        .mockResolvedValueOnce({
+          data: Buffer.from('data'),
+          headers: { 'content-type': 'audio/mpeg' },
+        });
+
+      const result = await client.downloadAudioFile('job-1', '/tmp');
+      expect(result.filename).toBe('audio_noext.mp3');
+      expect(result.filePath).toBe('/tmp/audio_noext.mp3');
+    });
+
+    it('should not double-append extension when filename already has one', async () => {
+      mockAxiosClient.get
+        .mockResolvedValueOnce({ data: { filename: 'recording.wav' } })
+        .mockResolvedValueOnce({
+          data: Buffer.from('data'),
+          headers: { 'content-type': 'audio/wav' },
+        });
+
+      const result = await client.downloadAudioFile('job-1', '/tmp');
+      expect(result.filename).toBe('recording.wav');
+      expect(result.filePath).toBe('/tmp/recording.wav');
+    });
+
+    it('should map audio/mp4 content-type to .m4a extension', async () => {
+      mockAxiosClient.get
+        .mockResolvedValueOnce({ data: { filename: 'voice_memo' } })
+        .mockResolvedValueOnce({
+          data: Buffer.from('data'),
+          headers: { 'content-type': 'audio/mp4' },
+        });
+
+      const result = await client.downloadAudioFile('job-1', '/tmp');
+      expect(result.filename).toBe('voice_memo.m4a');
+    });
   });
 
   describe('submitFile()', () => {

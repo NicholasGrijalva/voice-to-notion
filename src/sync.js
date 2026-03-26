@@ -13,9 +13,10 @@ const STATE_FILE = process.env.STATE_FILE || './data/.sync-state.json';
 const TEMP_DIR = process.env.TEMP_DIR || '/tmp/audio-downloads';
 
 class SyncWorker {
-  constructor(scriberrClient, notionClient, pollInterval = 30000) {
+  constructor(scriberrClient, notionClient, pollInterval = 30000, groqTranscriber = null) {
     this.scriberr = scriberrClient;
     this.notion = notionClient;
+    this.groq = groqTranscriber;
     this.pollInterval = pollInterval;
     this.syncedJobs = new Set();
     this.failedJobs = new Map(); // Track failed jobs with retry count and next-retry time
@@ -188,8 +189,24 @@ class SyncWorker {
     console.log(`[SyncWorker] Processing job ${jobId}: ${job.filename || 'unnamed'}`);
 
     // Fetch full transcript (getTranscript returns normalized { text, language })
-    const transcript = await this.scriberr.getTranscript(jobId);
-    const transcriptText = transcript.text || '';
+    let transcript = await this.scriberr.getTranscript(jobId);
+    let transcriptText = transcript.text || '';
+
+    // Groq fallback: if Scriberr transcript is empty, download audio and re-transcribe via Groq
+    if (!transcriptText && this.groq) {
+      console.log(`[SyncWorker] Empty Scriberr transcript for ${jobId}, trying Groq fallback...`);
+      this.ensureTempDir();
+      const audioFile = await this.scriberr.downloadAudioFile(jobId, TEMP_DIR);
+      if (!audioFile?.filePath) {
+        throw new Error(`Job ${jobId} has empty transcript and audio download failed`);
+      }
+      try {
+        transcript = await this.groq.transcribe(audioFile.filePath, transcript.language || 'en');
+        transcriptText = transcript.text || '';
+      } finally {
+        this.cleanupTempFile(audioFile.filePath);
+      }
+    }
 
     if (!transcriptText) {
       throw new Error(`Job ${jobId} has empty transcript (will retry)`);

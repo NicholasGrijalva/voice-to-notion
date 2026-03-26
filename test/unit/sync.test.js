@@ -7,6 +7,7 @@ describe('SyncWorker', () => {
   let worker;
   let mockScriberr;
   let mockNotion;
+  let mockGroq;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -35,7 +36,13 @@ describe('SyncWorker', () => {
       testConnection: vi.fn().mockResolvedValue(true),
     };
 
-    worker = new SyncWorker(mockScriberr, mockNotion, 30000);
+    // Mock Groq transcriber
+    mockGroq = {
+      transcribe: vi.fn().mockResolvedValue({ text: 'groq transcript', language: 'en' }),
+      generateTitle: vi.fn().mockResolvedValue('Generated Title'),
+    };
+
+    worker = new SyncWorker(mockScriberr, mockNotion, 30000, mockGroq);
   });
 
   afterEach(() => {
@@ -67,8 +74,17 @@ describe('SyncWorker', () => {
       expect(worker.failedJobs.size).toBe(0);
     });
 
-    it('should set maxRetries to 3', () => {
-      expect(worker.maxRetries).toBe(3);
+    it('should set maxRetries to 10 by default', () => {
+      expect(worker.maxRetries).toBe(10);
+    });
+
+    it('should store groq transcriber when provided', () => {
+      expect(worker.groq).toBe(mockGroq);
+    });
+
+    it('should accept null groq transcriber', () => {
+      const w = new SyncWorker(mockScriberr, mockNotion, 30000, null);
+      expect(w.groq).toBeNull();
     });
   });
 
@@ -111,7 +127,7 @@ describe('SyncWorker', () => {
       worker.loadState();
 
       expect(worker.failedJobs.size).toBe(1);
-      expect(worker.failedJobs.get('job-3')).toBe(2);
+      expect(worker.failedJobs.get('job-3')).toEqual({ count: 2, nextRetry: 0 });
     });
 
     it('should handle missing state file gracefully', () => {
@@ -256,7 +272,7 @@ describe('SyncWorker', () => {
     });
 
     it('should skip jobs that exceeded maxRetries', async () => {
-      worker.failedJobs.set('job-1', 3); // maxRetries = 3
+      worker.failedJobs.set('job-1', { count: 10, nextRetry: 0 }); // maxRetries = 10
       mockScriberr.getJobs.mockResolvedValue([
         { id: 'job-1', status: 'completed' },
       ]);
@@ -310,7 +326,9 @@ describe('SyncWorker', () => {
 
       await worker.sync();
 
-      expect(worker.failedJobs.get('job-1')).toBe(1);
+      const failState = worker.failedJobs.get('job-1');
+      expect(failState.count).toBe(1);
+      expect(failState.nextRetry).toBeGreaterThan(Date.now() - 60000);
     });
 
     it('should call saveState after processing', async () => {
@@ -332,26 +350,29 @@ describe('SyncWorker', () => {
       await worker.sync();
     });
 
-    it('should not add job to syncedJobs when transcript is empty', async () => {
+    it('should not add job to syncedJobs when transcript is empty and groq fails', async () => {
       mockScriberr.getJobs.mockResolvedValue([
         { id: 'job-empty', filename: 'test.mp3' },
       ]);
       mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+      mockScriberr.downloadAudioFile.mockResolvedValue(null);
 
       await worker.sync();
 
       expect(worker.syncedJobs.has('job-empty')).toBe(false);
     });
 
-    it('should increment failedJobs when transcript is empty', async () => {
+    it('should increment failedJobs when transcript is empty and groq also fails', async () => {
       mockScriberr.getJobs.mockResolvedValue([
         { id: 'job-empty', filename: 'test.mp3' },
       ]);
       mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+      mockScriberr.downloadAudioFile.mockResolvedValue(null);
 
       await worker.sync();
 
-      expect(worker.failedJobs.get('job-empty')).toBe(1);
+      const failState = worker.failedJobs.get('job-empty');
+      expect(failState.count).toBe(1);
     });
 
     it('should save state after each successful job sync', async () => {
@@ -392,7 +413,7 @@ describe('SyncWorker', () => {
 
       expect(worker.syncedJobs.has('job-1')).toBe(true);
       expect(worker.syncedJobs.has('job-2')).toBe(false);
-      expect(worker.failedJobs.get('job-2')).toBe(1);
+      expect(worker.failedJobs.get('job-2').count).toBe(1);
     });
   });
 
@@ -477,26 +498,88 @@ describe('SyncWorker', () => {
       );
     });
 
-    it('should throw when transcript text is empty', async () => {
+    it('should throw when transcript text is empty and no groq', async () => {
+      const workerNoGroq = new SyncWorker(mockScriberr, mockNotion, 30000, null);
       mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
 
-      await expect(worker.syncJob({ id: 'job-empty', filename: 'test.mp3' }))
+      await expect(workerNoGroq.syncJob({ id: 'job-empty', filename: 'test.mp3' }))
         .rejects.toThrow('empty transcript');
     });
 
-    it('should throw when transcript text is null', async () => {
+    it('should throw when transcript text is null and no groq', async () => {
+      const workerNoGroq = new SyncWorker(mockScriberr, mockNotion, 30000, null);
       mockScriberr.getTranscript.mockResolvedValue({ text: null, language: 'en' });
 
-      await expect(worker.syncJob({ id: 'job-null', filename: 'test.mp3' }))
+      await expect(workerNoGroq.syncJob({ id: 'job-null', filename: 'test.mp3' }))
         .rejects.toThrow('empty transcript');
     });
 
-    it('should not create Notion page when transcript is empty', async () => {
+    it('should not create Notion page when transcript is empty and groq fails', async () => {
       mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+      mockScriberr.downloadAudioFile.mockResolvedValue(null);
 
       await worker.syncJob({ id: 'job-empty', filename: 'test.mp3' }).catch(() => {});
 
       expect(mockNotion.createTranscriptPage).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to groq when scriberr transcript is empty', async () => {
+      mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+      mockScriberr.downloadAudioFile.mockResolvedValue({
+        filePath: '/tmp/audio.mp3',
+        filename: 'audio.mp3',
+        contentType: 'audio/mpeg',
+      });
+      mockGroq.transcribe.mockResolvedValue({ text: 'groq result', language: 'en' });
+
+      await worker.syncJob({ id: 'job-groq', filename: 'test.mp3' });
+
+      expect(mockGroq.transcribe).toHaveBeenCalledWith('/tmp/audio.mp3', 'en');
+      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+        expect.objectContaining({ transcript: 'groq result' })
+      );
+    });
+
+    it('should clean up temp file after groq fallback', async () => {
+      mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+      mockScriberr.downloadAudioFile.mockResolvedValue({
+        filePath: '/tmp/audio_fallback.mp3',
+        filename: 'audio_fallback.mp3',
+        contentType: 'audio/mpeg',
+      });
+
+      await worker.syncJob({ id: 'job-cleanup', filename: 'test.mp3' });
+
+      expect(fs.unlinkSync).toHaveBeenCalled();
+    });
+
+    it('should throw when groq also returns empty', async () => {
+      mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+      mockScriberr.downloadAudioFile.mockResolvedValue({
+        filePath: '/tmp/audio.mp3',
+        filename: 'audio.mp3',
+        contentType: 'audio/mpeg',
+      });
+      mockGroq.transcribe.mockResolvedValue({ text: '', language: 'en' });
+
+      await expect(worker.syncJob({ id: 'job-both-empty', filename: 'test.mp3' }))
+        .rejects.toThrow('empty transcript');
+    });
+
+    it('should throw when audio download fails during groq fallback', async () => {
+      mockScriberr.getTranscript.mockResolvedValue({ text: '', language: 'en' });
+      mockScriberr.downloadAudioFile.mockResolvedValue(null);
+
+      await expect(worker.syncJob({ id: 'job-no-audio', filename: 'test.mp3' }))
+        .rejects.toThrow('audio download failed');
+    });
+
+    it('should not attempt groq fallback when scriberr has transcript', async () => {
+      mockScriberr.getTranscript.mockResolvedValue({ text: 'scriberr text', language: 'en' });
+
+      await worker.syncJob({ id: 'job-ok', filename: 'test.mp3' });
+
+      expect(mockGroq.transcribe).not.toHaveBeenCalled();
     });
   });
 

@@ -14,6 +14,7 @@ const ObsidianClient = require('./obsidian');
 const SyncWorker = require('./sync');
 const MediaPipeline = require('./media-pipeline');
 const GroqTranscriber = require('./groq-transcriber');
+const AdminServer = require('./admin');
 
 // Validate required environment variables
 const required = ['SCRIBERR_API_URL', 'SCRIBERR_USERNAME', 'SCRIBERR_PASSWORD', 'NOTION_API_KEY', 'NOTION_DATABASE_ID'];
@@ -104,7 +105,7 @@ if (process.env.GROQ_API_KEY) {
 console.log('');
 
 // Pipeline 1: Scriberr Sync Worker
-const syncWorker = new SyncWorker(scriberr, notion, config.pollInterval);
+const syncWorker = new SyncWorker(scriberr, notion, config.pollInterval, groq);
 
 // Pipeline 2: Media Ingestion Pipeline (optional)
 let mediaPipeline = null;
@@ -136,11 +137,15 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   });
 }
 
+// Pipeline 4: Admin API (remote state management)
+const admin = new AdminServer(syncWorker);
+
 const shutdown = (signal) => {
   console.log(`\n[Worker] Received ${signal}, shutting down gracefully...`);
   syncWorker.stop();
   if (mediaPipeline) mediaPipeline.stop();
   if (telegramBot) telegramBot.stop();
+  admin.stop();
   process.exit(0);
 };
 
@@ -153,6 +158,7 @@ process.on('uncaughtException', (error) => {
   syncWorker.stop();
   if (mediaPipeline) mediaPipeline.stop();
   if (telegramBot) telegramBot.stop();
+  admin.stop();
   process.exit(1);
 });
 
@@ -180,6 +186,9 @@ async function main() {
   if (telegramBot) {
     await telegramBot.start();
   }
+
+  // Start admin API
+  admin.start();
 
   console.log('\n[Worker] All pipelines running. Waiting for work...\n');
 }

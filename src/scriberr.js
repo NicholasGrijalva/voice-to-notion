@@ -224,12 +224,13 @@ class ScriberrClient {
       }
 
       const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const outputPath = path.join(outputDir, safeFilename);
+      const finalFilename = path.extname(safeFilename) ? safeFilename : safeFilename + ext;
+      const outputPath = path.join(outputDir, finalFilename);
 
       fs.writeFileSync(outputPath, Buffer.from(response.data));
 
       console.log(`[Scriberr] Downloaded audio to ${outputPath}`);
-      return { filePath: outputPath, filename: safeFilename, contentType };
+      return { filePath: outputPath, filename: finalFilename, contentType };
     } catch (error) {
       if (error.response?.status === 404) {
         console.warn(`[Scriberr] No audio file available for job ${jobId}`);

@@ -12,6 +12,8 @@
 
 const axios = require('axios');
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 
 class ObsidianClient {
   constructor(apiKey, vaultPath, { port = 27124, captureFolder = '01_Capture' } = {}) {
@@ -42,7 +44,7 @@ class ObsidianClient {
    * @param {Object} options.metadata - { duration, language, processingTime, url }
    * @returns {Promise<string>} Vault-relative path of created note
    */
-  async createTranscriptPage({ title, transcript, source = 'Audio', sourceFilename = null, metadata = {} }) {
+  async createTranscriptPage({ title, transcript, source = 'Audio', sourceFilename = null, audioFileUploadId = null, metadata = {} }) {
     transcript = typeof transcript === 'string' ? transcript : String(transcript || '');
 
     // Sanitize title for filesystem
@@ -83,6 +85,11 @@ class ObsidianClient {
       if (metadata.duration) metaParts.push(`Duration: ${this.formatDuration(metadata.duration)}`);
       if (metadata.language) metaParts.push(`Language: ${metadata.language}`);
       bodyParts.push(`> ${metaParts.join(' | ')}`);
+    }
+
+    if (audioFileUploadId) {
+      const attachmentName = path.basename(audioFileUploadId);
+      bodyParts.push('', `![[${attachmentName}]]`);
     }
 
     bodyParts.push('', transcript);
@@ -139,11 +146,33 @@ class ObsidianClient {
   }
 
   /**
-   * Stub -- Obsidian doesn't have file uploads like Notion.
-   * Returns null so callers can skip attachment logic.
+   * Upload a file to the Obsidian vault as an attachment.
+   * Returns the vault-relative path (used as embed link).
+   *
+   * @param {string} filePath - Local path to the file
+   * @param {string} filename - Desired filename
+   * @param {string} contentType - MIME type (e.g. 'audio/mpeg')
+   * @returns {Promise<string|null>} Vault-relative path or null on failure
    */
-  async uploadFile() {
-    return null;
+  async uploadFile(filePath, filename, contentType) {
+    try {
+      const data = fs.readFileSync(filePath);
+      const safeFilename = this.sanitizeFilename(path.basename(filename, path.extname(filename))) + path.extname(filename);
+      const vaultPath = `${this.captureFolder}/attachments/${safeFilename}`;
+      const encodedPath = vaultPath.split('/').map(encodeURIComponent).join('/');
+
+      await this.client.put(`/vault/${encodedPath}`, data, {
+        headers: { 'Content-Type': contentType || 'application/octet-stream' },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      });
+
+      console.log(`[Obsidian] Uploaded attachment: ${vaultPath}`);
+      return vaultPath;
+    } catch (error) {
+      console.warn(`[Obsidian] Attachment upload failed: ${error.message}`);
+      return null;
+    }
   }
 
   /**
