@@ -11,7 +11,9 @@
     "test:coverage": "vitest run --coverage",
     "test:connection": "node scripts/test-connection.js",
     "ingest": "node scripts/ingest-url.js",
-    "ingest-file": "node scripts/ingest-file.js"
+    "ingest-file": "node scripts/ingest-file.js",
+    "setup": "pip install -r requirements.txt",
+    "postinstall": "echo 'Run npm run setup to install Python deps (yt-dlp, curl_cffi)'"
   },
   "keywords": [
     "notion",

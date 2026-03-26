@@ -8,8 +8,11 @@ RUN apk add --no-cache \
     ffmpeg \
     python3 \
     py3-pip \
-    curl \
-    && pip3 install --no-cache-dir --break-system-packages yt-dlp curl_cffi
+    curl
+
+# Copy and install Python dependencies (yt-dlp + curl_cffi for anti-bot)
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Set working directory
 WORKDIR /app

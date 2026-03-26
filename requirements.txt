@@ -1,0 +1,4 @@
+# Python dependencies for media pipeline
+# Install: pip install -r requirements.txt
+yt-dlp>=2024.1.0
+curl_cffi>=0.7.0

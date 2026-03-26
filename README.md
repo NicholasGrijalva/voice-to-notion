@@ -14,13 +14,19 @@ cd voice-to-notion
 cp .env.example .env
 # Edit .env with your credentials (see Setup below)
 
-# 3. Deploy
-./scripts/boot.sh
+# 3. Install
+npm install
+npm run setup   # installs Python deps (yt-dlp, curl_cffi)
 
-# Or manually:
+# 4a. Run locally
+node src/index.js
+
+# 4b. Or deploy with Docker
 docker compose up -d
 docker compose logs -f notion-worker
 ```
+
+**Prerequisites (local):** Node.js 18+, Python 3, ffmpeg (`brew install ffmpeg`).
 
 ## Features
 
