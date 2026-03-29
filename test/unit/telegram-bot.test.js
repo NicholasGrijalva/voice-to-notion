@@ -61,6 +61,7 @@ describe('TelegramBot', () => {
       appendBlocks: vi.fn().mockResolvedValue(),
       uploadFile: vi.fn().mockResolvedValue('upload-id'),
       createTranscriptPage: vi.fn().mockResolvedValue('page-id'),
+      createStructuredPage: vi.fn().mockResolvedValue('page-id'),
       splitText: vi.fn((text, max) => {
         if (!text) return [''];
         const chunks = [];
@@ -667,12 +668,12 @@ describe('TelegramBot', () => {
         );
       });
 
-      it('should delete originalMessageId from pendingSources after success', async () => {
+      it('should keep pendingSources tracking after reply (allows multiple replies)', async () => {
         const ctx = makeReplyCtx(TRACKED_MSG_ID, { message: { text: 'my take' } });
 
         await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
 
-        expect(bot.pendingSources.has(TRACKED_MSG_ID)).toBe(false);
+        expect(bot.pendingSources.has(TRACKED_MSG_ID)).toBe(true);
       });
 
       it('should edit status message to "Added your take"', async () => {
@@ -761,7 +762,7 @@ describe('TelegramBot', () => {
 
         await bot.handleReplyChain(ctx, TRACKED_MSG_ID);
 
-        expect(ocr.ocrImage).toHaveBeenCalledWith('/tmp/test-telegram/downloaded-file');
+        expect(ocr.ocrImage).toHaveBeenCalledWith('/tmp/test-telegram/downloaded-file', { context: null });
       });
 
       it('should attempt notion.uploadFile for the image', async () => {
@@ -911,10 +912,241 @@ describe('TelegramBot', () => {
         await bot.handlePhoto(ctx);
 
         // Should NOT create a new OCR page
-        expect(mockNotion.createTranscriptPage).not.toHaveBeenCalled();
+        expect(mockNotion.createStructuredPage).not.toHaveBeenCalled();
         // Should have appended to existing page
         expect(mockNotion.appendBlocks).toHaveBeenCalledWith(TRACKED_PAGE_ID, expect.any(Array));
       });
+    });
+  });
+
+  // ─── Caption & Summarizer in handlePhoto ──────────────────────────────────
+
+  describe('handlePhoto() - caption and summarizer', () => {
+    beforeEach(() => {
+      vi.spyOn(bot, 'downloadTelegramFile').mockResolvedValue('/tmp/test-telegram/tg-photo.jpg');
+      vi.spyOn(ocr, 'ocrImage').mockResolvedValue('# Heading\nSome OCR text content that is long enough to trigger the summarization threshold which requires more than one hundred characters of input text to activate');
+      mockNotion.createStructuredPage = vi.fn().mockResolvedValue('page-structured-123');
+      mockNotion.uploadFile = vi.fn().mockResolvedValue('img-upload-id');
+      mockPipeline.summarizer = {
+        summarize: vi.fn().mockResolvedValue({
+          title: 'Summarized Title',
+          keyPoints: ['Key point 1'],
+          summary: 'A summary of the OCR text',
+          tags: [],
+        }),
+      };
+    });
+
+    function makePhotoCtx(overrides = {}) {
+      return {
+        from: { id: 123 },
+        chat: { id: 456 },
+        message: {
+          message_id: 99,
+          photo: [{ file_id: 'p1', width: 800 }],
+          ...overrides.message,
+        },
+        reply: vi.fn().mockResolvedValue({ message_id: 1 }),
+        telegram: {
+          editMessageText: vi.fn().mockResolvedValue({}),
+          getFileLink: vi.fn().mockResolvedValue({ href: 'https://api.telegram.org/file/photo.jpg' }),
+        },
+      };
+    }
+
+    it('should pass caption as context to ocrImage when present', async () => {
+      const ctx = makePhotoCtx({ message: { caption: 'Ch 3 Neural Networks' } });
+
+      await bot.handlePhoto(ctx);
+
+      expect(ocr.ocrImage).toHaveBeenCalledWith(
+        '/tmp/test-telegram/tg-photo.jpg',
+        { context: 'Ch 3 Neural Networks' }
+      );
+    });
+
+    it('should pass null context when no caption', async () => {
+      const ctx = makePhotoCtx();
+
+      await bot.handlePhoto(ctx);
+
+      expect(ocr.ocrImage).toHaveBeenCalledWith(
+        '/tmp/test-telegram/tg-photo.jpg',
+        { context: null }
+      );
+    });
+
+    it('should use caption as title when provided', async () => {
+      mockPipeline.summarizer.summarize.mockResolvedValue(null);
+      const ctx = makePhotoCtx({ message: { caption: 'My custom title' } });
+
+      await bot.handlePhoto(ctx);
+
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'My custom title' })
+      );
+    });
+
+    it('should prefer summarizer title over caption', async () => {
+      const ctx = makePhotoCtx({ message: { caption: 'My caption' } });
+
+      await bot.handlePhoto(ctx);
+
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Summarized Title' })
+      );
+    });
+
+    it('should call summarizer on OCR output', async () => {
+      const ctx = makePhotoCtx();
+
+      await bot.handlePhoto(ctx);
+
+      expect(mockPipeline.summarizer.summarize).toHaveBeenCalledWith(
+        expect.stringContaining('Some OCR text'),
+        'idea',
+        expect.objectContaining({ title: expect.any(String) })
+      );
+    });
+
+    it('should pass summary to createStructuredPage', async () => {
+      const ctx = makePhotoCtx();
+
+      await bot.handlePhoto(ctx);
+
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          summary: expect.objectContaining({
+            title: 'Summarized Title',
+            keyPoints: ['Key point 1'],
+          }),
+        })
+      );
+    });
+
+    it('should pass OCR text as content to createStructuredPage', async () => {
+      const ctx = makePhotoCtx();
+
+      await bot.handlePhoto(ctx);
+
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('Some OCR text'),
+        })
+      );
+    });
+
+    it('should work without summarizer (null pipeline.summarizer)', async () => {
+      mockPipeline.summarizer = null;
+      const ctx = makePhotoCtx();
+
+      await bot.handlePhoto(ctx);
+
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
+        expect.objectContaining({ summary: null })
+      );
+    });
+
+    it('should fall back to OCR first line when no caption and summarizer returns null', async () => {
+      mockPipeline.summarizer.summarize.mockResolvedValue(null);
+      const ctx = makePhotoCtx();
+
+      await bot.handlePhoto(ctx);
+
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Heading' })
+      );
+    });
+  });
+
+  // ─── Reply Chain - Continuation heading & caption context ─────────────────
+
+  describe('reply chain - heading and caption', () => {
+    const TRACKED_MSG = 500;
+    const TRACKED_PAGE = 'page-for-heading-test';
+
+    beforeEach(() => {
+      bot.trackSource(TRACKED_MSG, TRACKED_PAGE);
+      vi.spyOn(bot, 'downloadTelegramFile').mockResolvedValue('/tmp/test-telegram/reply.jpg');
+      vi.spyOn(ocr, 'ocrImage').mockResolvedValue('Reply OCR text');
+      mockNotion.uploadFile = vi.fn().mockResolvedValue('upload-reply-id');
+    });
+
+    function makeReply(msgOverrides = {}) {
+      return {
+        from: { id: 123 },
+        chat: { id: 456 },
+        message: {
+          reply_to_message: { message_id: TRACKED_MSG },
+          ...msgOverrides,
+        },
+        reply: vi.fn().mockResolvedValue({ message_id: 1 }),
+        telegram: {
+          editMessageText: vi.fn().mockResolvedValue({}),
+          getFileLink: vi.fn().mockResolvedValue({ href: 'https://api.telegram.org/file/reply.jpg' }),
+        },
+      };
+    }
+
+    it('should use "Continuation" heading for photo replies', async () => {
+      const ctx = makeReply({
+        photo: [{ file_id: 'rp1', width: 800 }],
+      });
+
+      await bot.handleReplyChain(ctx, TRACKED_MSG);
+
+      const blocks = mockNotion.appendBlocks.mock.calls[0][1];
+      const headingBlock = blocks.find(b => b.type === 'heading_2');
+      expect(headingBlock.heading_2.rich_text[0].text.content).toBe('Continuation');
+    });
+
+    it('should use "My Take" heading for text replies', async () => {
+      const ctx = makeReply({ text: 'My commentary here' });
+
+      await bot.handleReplyChain(ctx, TRACKED_MSG);
+
+      const blocks = mockNotion.appendBlocks.mock.calls[0][1];
+      const headingBlock = blocks.find(b => b.type === 'heading_2');
+      expect(headingBlock.heading_2.rich_text[0].text.content).toBe('My Take');
+    });
+
+    it('should use "My Take" heading for voice replies', async () => {
+      mockPipeline.ingestFile.mockResolvedValue({ transcript: 'Voice text' });
+      const ctx = makeReply({
+        voice: { file_id: 'v1', duration: 5 },
+      });
+
+      await bot.handleReplyChain(ctx, TRACKED_MSG);
+
+      const blocks = mockNotion.appendBlocks.mock.calls[0][1];
+      const headingBlock = blocks.find(b => b.type === 'heading_2');
+      expect(headingBlock.heading_2.rich_text[0].text.content).toBe('My Take');
+    });
+
+    it('should pass caption as context to ocrImage in photo replies', async () => {
+      const ctx = makeReply({
+        photo: [{ file_id: 'rp1', width: 800 }],
+        caption: 'Page 2 of notebook',
+      });
+
+      await bot.handleReplyChain(ctx, TRACKED_MSG);
+
+      expect(ocr.ocrImage).toHaveBeenCalledWith(
+        '/tmp/test-telegram/reply.jpg',
+        { context: 'Page 2 of notebook' }
+      );
+    });
+
+    it('should allow multiple replies to same message (no deletion)', async () => {
+      const ctx1 = makeReply({ text: 'First reply' });
+      await bot.handleReplyChain(ctx1, TRACKED_MSG);
+
+      expect(bot.pendingSources.has(TRACKED_MSG)).toBe(true);
+
+      const ctx2 = makeReply({ text: 'Second reply' });
+      await bot.handleReplyChain(ctx2, TRACKED_MSG);
+
+      expect(mockNotion.appendBlocks).toHaveBeenCalledTimes(2);
     });
   });
 

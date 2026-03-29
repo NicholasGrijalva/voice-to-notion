@@ -44,7 +44,7 @@ class ObsidianClient {
    * @param {Object} options.metadata - { duration, language, processingTime, url }
    * @returns {Promise<string>} Vault-relative path of created note
    */
-  async createTranscriptPage({ title, transcript, source = 'Audio', sourceFilename = null, audioFileUploadId = null, metadata = {} }) {
+  async createTranscriptPage({ title, transcript, source = 'Audio', sourceFilename = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {} }) {
     transcript = typeof transcript === 'string' ? transcript : String(transcript || '');
 
     // Sanitize title for filesystem
@@ -92,6 +92,11 @@ class ObsidianClient {
       bodyParts.push('', `![[${attachmentName}]]`);
     }
 
+    if (imageFileUploadId) {
+      const attachmentName = path.basename(imageFileUploadId);
+      bodyParts.push('', `![[${attachmentName}]]`);
+    }
+
     bodyParts.push('', transcript);
 
     const content = yamlLines.join('\n') + '\n\n' + bodyParts.join('\n');
@@ -131,8 +136,14 @@ class ObsidianClient {
       } else if (block.type === 'paragraph') {
         const text = block.paragraph?.rich_text?.[0]?.text?.content || '';
         markdownParts.push(text);
+      } else if (block.type === 'image') {
+        // Image was already uploaded via uploadFile() -- embed by vault path
+        const uploadId = block.image?.file_upload?.id;
+        if (uploadId) {
+          const attachmentName = path.basename(uploadId);
+          markdownParts.push(`\n![[${attachmentName}]]\n`);
+        }
       }
-      // Skip image/audio blocks (no vault equivalent without file copy)
     }
 
     const appendContent = markdownParts.join('\n');
@@ -241,7 +252,7 @@ class ObsidianClient {
    * Create a note with structured Summary + Content sections.
    * Mirrors NotionClient.createStructuredPage().
    */
-  async createStructuredPage({ title, content, summary = null, source = 'Idea', sourceFilename = null, sourceRef = null, metadata = {} }) {
+  async createStructuredPage({ title, content, summary = null, source = 'Idea', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {} }) {
     content = typeof content === 'string' ? content : String(content || '');
 
     const safeTitle = this.sanitizeFilename(summary?.title || title);
@@ -276,6 +287,16 @@ class ObsidianClient {
       if (metadata.duration) metaParts.push(`Duration: ${this.formatDuration(metadata.duration)}`);
       if (metadata.language) metaParts.push(`Language: ${metadata.language}`);
       bodyParts.push(`> ${metaParts.join(' | ')}`);
+    }
+
+    if (audioFileUploadId) {
+      const attachmentName = path.basename(audioFileUploadId);
+      bodyParts.push('', `![[${attachmentName}]]`);
+    }
+
+    if (imageFileUploadId) {
+      const attachmentName = path.basename(imageFileUploadId);
+      bodyParts.push('', `![[${attachmentName}]]`);
     }
 
     // Summary section

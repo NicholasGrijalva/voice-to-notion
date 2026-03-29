@@ -53,11 +53,20 @@ describe('Image Upload Feature', () => {
     mockPipeline = {
       ingest: vi.fn().mockResolvedValue({ title: 'Test', notionUrl: 'https://notion.so/x', pageId: 'p1' }),
       ingestFile: vi.fn().mockResolvedValue({ title: 'Test', notionUrl: 'https://notion.so/x', pageId: 'p1' }),
+      summarizer: {
+        summarize: vi.fn().mockResolvedValue({
+          title: 'Test Heading',
+          keyPoints: ['Point 1'],
+          summary: 'A test summary',
+          tags: [],
+        }),
+      },
     };
 
     mockNotion = {
       uploadFile: vi.fn().mockResolvedValue('img-upload-123'),
       createTranscriptPage: vi.fn().mockResolvedValue('page-abc-123'),
+      createStructuredPage: vi.fn().mockResolvedValue('page-abc-123'),
       splitText: vi.fn(text => [text]),
       appendBlocks: vi.fn().mockResolvedValue({}),
     };
@@ -121,14 +130,14 @@ describe('Image Upload Feature', () => {
       );
     });
 
-    it('should pass imageFileUploadId to createTranscriptPage', async () => {
+    it('should pass imageFileUploadId to createStructuredPage', async () => {
       const ctx = makeCtx({
         message: { photo: [{ file_id: 'p1', width: 800 }] },
       });
 
       await bot.handlePhoto(ctx);
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({
           imageFileUploadId: 'img-upload-123',
           source: 'Idea',
@@ -136,14 +145,14 @@ describe('Image Upload Feature', () => {
       );
     });
 
-    it('should use OCR first line as title', async () => {
+    it('should use summarizer title (falls back to OCR first line)', async () => {
       const ctx = makeCtx({
         message: { photo: [{ file_id: 'p1', width: 800 }] },
       });
 
       await bot.handlePhoto(ctx);
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'Test Heading' })
       );
     });
@@ -156,7 +165,7 @@ describe('Image Upload Feature', () => {
 
       await bot.handlePhoto(ctx);
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ imageFileUploadId: null })
       );
     });
@@ -231,6 +240,12 @@ describe('Image Upload Feature', () => {
     beforeEach(() => {
       bot.downloadTelegramFile.mockResolvedValue('/tmp/test-telegram/tg-123.png');
       ocr.ocrImage.mockResolvedValue('# Doc Image\nExtracted text');
+      mockPipeline.summarizer.summarize.mockResolvedValue({
+        title: 'Doc Image',
+        keyPoints: ['Point 1'],
+        summary: 'A test summary',
+        tags: [],
+      });
     });
 
     it('should upload image document to Notion using doc.file_name', async () => {
@@ -247,14 +262,14 @@ describe('Image Upload Feature', () => {
       );
     });
 
-    it('should pass imageFileUploadId to createTranscriptPage', async () => {
+    it('should pass imageFileUploadId to createStructuredPage', async () => {
       const ctx = makeCtx({
         message: { document: { file_id: 'doc-1', file_name: 'photo.jpg', file_size: 5000 } },
       });
 
       await bot.handleDocument(ctx);
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({
           imageFileUploadId: 'img-upload-123',
           sourceFilename: 'photo.jpg',
@@ -284,7 +299,7 @@ describe('Image Upload Feature', () => {
 
       await bot.handleDocument(ctx);
 
-      expect(mockNotion.createTranscriptPage).toHaveBeenCalledWith(
+      expect(mockNotion.createStructuredPage).toHaveBeenCalledWith(
         expect.objectContaining({ imageFileUploadId: null })
       );
     });
