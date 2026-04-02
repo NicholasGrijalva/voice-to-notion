@@ -218,7 +218,8 @@ Mobile capture layer using long-polling (no webhook, no exposed ports). Handles:
 
 | Input Type | Handler | Processing |
 |-----------|---------|-----------|
-| Text with URLs | `handleText` | Extract URLs, route each through `pipeline.ingest()` |
+| Text with URLs | `handleText` | Extract URLs, route each through `pipeline.ingestUrl()`; non-URL text preserved as quote block |
+| Text only | `handleText` | Create "Idea" page via `pipeline.ingestText()`; LLM title if > 100 chars |
 | Voice message | `handleFile('voice')` | Download `.ogg`, route through `pipeline.ingestFile()` |
 | Audio file | `handleFile('audio')` | Download, route through `pipeline.ingestFile()` |
 | Video / video note | `handleFile('video')` | Download `.mp4`, route through `pipeline.ingestFile()` |
@@ -378,10 +379,10 @@ The worker writes to a Notion database with these properties (auto-created on fi
 
 | Property | Type | Set By Worker |
 |----------|------|--------------|
-| Title | title | Media title or filename |
+| Title | title | Media title, filename, or LLM-generated from text |
 | Status | select | Always "New" |
 | Date Added | date | Current timestamp |
-| Type | select | "Audio", "Video", "YouTube", or "Idea" |
+| Type | select | "Audio", "Video", "YouTube", "Idea", "Post", "Article" |
 | Source | rich_text | Filepath or URL (auto-created if missing) |
 | Source Filename | rich_text | Original filename |
 | Processing Time (s) | number | Transcription duration |
@@ -393,7 +394,9 @@ Page body contains:
 1. Metadata callout block (duration, language)
 2. Audio attachment block (if upload succeeded)
 3. Image block (for photo/OCR pages)
-4. Transcript text as paragraph blocks (chunked at 1900 chars)
+4. User annotation quote block (if text sent with URL)
+5. Summary + Key Points sections (if LLM summarization enabled)
+6. Full Transcript/content as paragraph blocks (chunked at 1900 chars)
 
 The Notion API limits pages to 100 blocks per request; overflow blocks are appended via `PATCH /blocks/{id}/children`.
 

@@ -32,6 +32,8 @@ docker compose logs -f notion-worker
 
 - **Dual destination** — write to Notion (default) or Obsidian vault via `DESTINATION` env var
 - **Telegram bot** — send URLs, voice notes, photos, or media from your phone
+- **Plain text capture** — send text without URLs; saved as "Idea" pages with LLM-generated titles
+- **URL annotation** — send text + URL together; your text is preserved as a quote block on the page
 - **Photo OCR** — send photos/screenshots; Gemini 2.5 Flash extracts text
 - **Reply chain** — reply to any captured message with voice/text to append a "My Take" annotation
 - **Auto-generated titles** — Groq LLM summarizes transcripts into descriptive page titles
@@ -222,6 +224,8 @@ Send any of these to your bot:
 - **Audio/video file** — same pipeline as voice messages
 - **Photo/screenshot** — OCR via Gemini 2.5 Flash, creates Notion page as "Idea"
 - **Image file** (.jpg, .png, .webp, .heic sent as document) — same as photo
+- **Text message** — plain text (no URLs) creates an "Idea" page with LLM-generated title if over 100 chars
+- **Text + URL** — surrounding text is saved as a quote block on the page created from the URL
 - **Multiple URLs in one message** — processes each one sequentially
 
 **Reply chain:** Reply to any bot-processed message with voice, text, or a photo to append a "My Take" section to the existing Notion page. This lets you capture a source (image, URL, video) and then add your reaction/annotation without creating a separate page.
