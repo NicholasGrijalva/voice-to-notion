@@ -252,7 +252,7 @@ class ObsidianClient {
    * Create a note with structured Summary + Content sections.
    * Mirrors NotionClient.createStructuredPage().
    */
-  async createStructuredPage({ title, content, summary = null, source = 'Idea', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {} }) {
+  async createStructuredPage({ title, content, summary = null, source = 'Idea', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {}, annotation = null }) {
     content = typeof content === 'string' ? content : String(content || '');
 
     const safeTitle = this.sanitizeFilename(summary?.title || title);
@@ -297,6 +297,11 @@ class ObsidianClient {
     if (imageFileUploadId) {
       const attachmentName = path.basename(imageFileUploadId);
       bodyParts.push('', `![[${attachmentName}]]`);
+    }
+
+    // User annotation
+    if (annotation) {
+      bodyParts.push('', `> ${annotation}`);
     }
 
     // Summary section

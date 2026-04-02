@@ -489,7 +489,7 @@ class NotionClient {
    * Create a page with structured Summary + Content sections.
    * Used by the enhanced pipeline (summarizer-enabled flow).
    */
-  async createStructuredPage({ title, content, summary = null, source = 'Idea', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {} }) {
+  async createStructuredPage({ title, content, summary = null, source = 'Idea', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {}, annotation = null }) {
     content = typeof content === 'string' ? content : String(content || '');
     try {
       const properties = {
@@ -533,6 +533,10 @@ class NotionClient {
 
       if (audioFileUploadId) children.push({ object: 'block', type: 'audio', audio: { type: 'file_upload', file_upload: { id: audioFileUploadId } } });
       if (imageFileUploadId) children.push({ object: 'block', type: 'image', image: { type: 'file_upload', file_upload: { id: imageFileUploadId } } });
+
+      if (annotation) {
+        children.push({ object: 'block', type: 'quote', quote: { rich_text: [{ type: 'text', text: { content: annotation.slice(0, 2000) } }] } });
+      }
 
       if (summary) {
         children.push({ object: 'block', type: 'heading_2', heading_2: { rich_text: [{ type: 'text', text: { content: 'Summary' } }] } });

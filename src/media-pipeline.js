@@ -579,6 +579,7 @@ class MediaPipeline {
           url,
           processingTime: Math.round(processingTime),
         },
+        annotation: opts.annotation || null,
       });
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -596,6 +597,42 @@ class MediaPipeline {
       // Last resort: try standard ingest
       return this.ingest(url, opts);
     }
+  }
+
+  /**
+   * Plain text capture — saves text as an "Idea" page with optional summarization.
+   *
+   * @param {string} text - Raw text to capture
+   * @param {Object} opts
+   * @returns {Promise<{ pageId: string, title: string }>}
+   */
+  async ingestText(text, opts = {}) {
+    const startTime = Date.now();
+    console.log(`\n[MediaPipeline] === Text capture (${text.length} chars) ===`);
+
+    let summary = null;
+    if (this.summarizer) {
+      summary = await this.summarizer.summarize(text, 'idea');
+    }
+
+    const title = summary?.title || text.slice(0, 60).replace(/\n/g, ' ').trim();
+    const processingTime = (Date.now() - startTime) / 1000;
+
+    const pageId = await this.notion.createStructuredPage({
+      title,
+      content: text,
+      summary,
+      source: 'Idea',
+      metadata: {
+        processingTime: Math.round(processingTime),
+      },
+    });
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const locationUrl = this.formatLocation(pageId);
+    console.log(`[MediaPipeline] === Complete: ${title} (${elapsed}s) -> ${locationUrl} ===\n`);
+
+    return { pageId, notionUrl: locationUrl, title };
   }
 
   /**
@@ -681,6 +718,7 @@ class MediaPipeline {
         processingTime: Math.round(processingTime),
         url,
       },
+      annotation: opts.annotation || null,
     });
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

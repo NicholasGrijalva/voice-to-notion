@@ -307,14 +307,33 @@ class TelegramBot {
     const text = ctx.message.text;
     const urls = text.match(URL_REGEX);
 
+    // No URLs — capture as plain text idea
     if (!urls || urls.length === 0) {
-      return ctx.reply('No URLs found. Send a link, voice note, photo, or media file.');
+      if (text.trim().length < 2) return;
+      const status = await ctx.reply('Capturing idea...');
+      try {
+        const result = await this.pipeline.ingestText(text.trim());
+        this.trackSource(ctx.message.message_id, result.pageId);
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          this.formatResult(result.title, result.pageId)
+        );
+      } catch (error) {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          `Failed: ${error.message}`
+        );
+      }
+      return;
     }
+
+    // URLs found — extract surrounding text as annotation
+    const annotation = text.replace(URL_REGEX, '').trim() || null;
 
     for (const url of urls) {
       const status = await ctx.reply(`Processing: ${url}`);
       try {
-        const result = await this.pipeline.ingestUrl(url);
+        const result = await this.pipeline.ingestUrl(url, { annotation });
         this.trackSource(ctx.message.message_id, result.pageId);
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
