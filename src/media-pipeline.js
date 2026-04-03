@@ -451,10 +451,9 @@ class MediaPipeline {
    * Returns a Notion URL or an Obsidian vault path.
    */
   formatLocation(pageId) {
-    const isObsidian = this.notion?.constructor?.name === 'ObsidianClient';
-    if (isObsidian) {
-      return pageId; // Already a vault-relative path like "01_Capture/Title.md"
-    }
+    const clientName = this.notion?.constructor?.name;
+    if (clientName === 'ObsidianClient') return pageId;
+    if (clientName === 'CognosMapClient') return pageId;
     return `https://notion.so/${pageId.replace(/-/g, '')}`;
   }
 

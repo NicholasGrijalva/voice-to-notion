@@ -60,13 +60,22 @@ require('dotenv').config();
 const ScriberrClient = require('./scriberr');
 const NotionClient = require('./notion');
 const ObsidianClient = require('./obsidian');
+const CognosMapClient = require('./cognosmap-client');
 const SyncWorker = require('./sync');
 const MediaPipeline = require('./media-pipeline');
 const GroqTranscriber = require('./groq-transcriber');
 const AdminServer = require('./admin');
 
 // Validate required environment variables
-const required = ['SCRIBERR_API_URL', 'SCRIBERR_USERNAME', 'SCRIBERR_PASSWORD', 'NOTION_API_KEY', 'NOTION_DATABASE_ID'];
+// Notion keys are only required if not using CognosMap as destination
+const destination = (process.env.DESTINATION || 'notion').toLowerCase();
+const required = ['SCRIBERR_API_URL', 'SCRIBERR_USERNAME', 'SCRIBERR_PASSWORD'];
+if (destination !== 'cognosmap') {
+  required.push('NOTION_API_KEY', 'NOTION_DATABASE_ID');
+}
+if (destination === 'cognosmap') {
+  required.push('COGNOSMAP_API_URL', 'COGNOSMAP_API_KEY');
+}
 const missing = required.filter(key => !process.env[key]);
 
 if (missing.length > 0) {
@@ -118,8 +127,10 @@ console.log(`  Telegram Bot:     ${process.env.TELEGRAM_BOT_TOKEN ? 'ENABLED' : 
 // Initialize shared clients
 const scriberr = new ScriberrClient(config.scriberr.url, config.scriberr.username, config.scriberr.password);
 
-// Build both clients (if configured) so /mode can toggle at runtime
-const notionClientInstance = new NotionClient(config.notion.key, config.notion.databaseId);
+// Build all configured clients so /mode can toggle at runtime
+const notionClientInstance = (process.env.NOTION_API_KEY && process.env.NOTION_DATABASE_ID)
+  ? new NotionClient(config.notion.key, config.notion.databaseId)
+  : null;
 
 let obsidianClientInstance = null;
 const obsidianKey = process.env.OBSIDIAN_LOCAL_REST_API_KEY;
@@ -132,9 +143,18 @@ if (obsidianKey) {
   });
 }
 
+let cognosmapClientInstance = null;
+if (process.env.COGNOSMAP_API_URL && process.env.COGNOSMAP_API_KEY) {
+  cognosmapClientInstance = new CognosMapClient(
+    process.env.COGNOSMAP_API_URL,
+    process.env.COGNOSMAP_API_KEY
+  );
+}
+
 // Select active destination
-const destination = (process.env.DESTINATION || 'notion').toLowerCase();
-const notion = destination === 'obsidian' && obsidianClientInstance
+const notion = destination === 'cognosmap' && cognosmapClientInstance
+  ? cognosmapClientInstance
+  : destination === 'obsidian' && obsidianClientInstance
   ? obsidianClientInstance
   : notionClientInstance;
 
@@ -182,6 +202,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     pipeline: mediaPipeline,
     notionClient: notionClientInstance,
     obsidianClient: obsidianClientInstance,
+    cognosmapClient: cognosmapClientInstance,
     tempDir: config.media.tempDir ? config.media.tempDir + '/telegram' : '/tmp/telegram-downloads'
   });
 }

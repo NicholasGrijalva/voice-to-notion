@@ -24,14 +24,20 @@ const PostStore = require('./publish/post-store');
 const URL_REGEX = /https?:\/\/[^\s]+/g;
 
 class TelegramBot {
-  constructor({ pipeline, notionClient, obsidianClient, tempDir }) {
+  constructor({ pipeline, notionClient, obsidianClient, cognosmapClient, tempDir }) {
     this.pipeline = pipeline;
     this.notionClient = notionClient;
     this.obsidianClient = obsidianClient;
+    this.cognosmapClient = cognosmapClient;
     // Active write client -- starts based on DESTINATION env
-    this.notion = (process.env.DESTINATION || 'notion').toLowerCase() === 'obsidian'
-      ? obsidianClient || notionClient
-      : notionClient;
+    const dest = (process.env.DESTINATION || 'notion').toLowerCase();
+    if (dest === 'cognosmap' && cognosmapClient) {
+      this.notion = cognosmapClient;
+    } else if (dest === 'obsidian' && obsidianClient) {
+      this.notion = obsidianClient;
+    } else {
+      this.notion = notionClient;
+    }
     this.tempDir = tempDir || '/tmp/telegram-downloads';
 
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -82,21 +88,27 @@ class TelegramBot {
     }
   }
 
-  get isObsidian() {
-    return this.notion?.constructor?.name === 'ObsidianClient';
+  get destName() {
+    const name = this.notion?.constructor?.name;
+    if (name === 'ObsidianClient') return 'obsidian';
+    if (name === 'CognosMapClient') return 'cognosmap';
+    return 'notion';
   }
 
   get destLabel() {
-    return this.isObsidian ? 'Obsidian' : 'Notion';
+    const labels = { notion: 'Notion', obsidian: 'Obsidian', cognosmap: 'CognosMap' };
+    return labels[this.destName] || 'Notion';
   }
 
   /**
    * Format a result message with the right location for current destination.
    */
   formatResult(title, pageId) {
-    if (this.isObsidian) {
-      // pageId is a vault path like "01_Capture/Title.md"
+    if (this.destName === 'obsidian') {
       return `Saved to Obsidian: ${title}\n${pageId}`;
+    }
+    if (this.destName === 'cognosmap') {
+      return `Saved to CognosMap: ${title}\n${pageId}`;
     }
     const notionUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
     return `Saved to Notion: ${title}\n${notionUrl}`;
@@ -121,36 +133,32 @@ class TelegramBot {
       );
     });
 
-    // /mode command -- toggle or set destination
+    // /mode command -- set or cycle destination
     this.bot.command('mode', (ctx) => {
       const args = ctx.message.text.split(' ').slice(1);
       const requested = args[0]?.toLowerCase();
 
-      if (requested === 'notion') {
-        if (!this.notionClient) return ctx.reply('Notion client not configured.');
-        this.notion = this.notionClient;
-        if (this.pipeline) this.pipeline.notion = this.notionClient;
-        return ctx.reply('Switched to Notion.');
-      }
-      if (requested === 'obsidian') {
-        if (!this.obsidianClient) return ctx.reply('Obsidian client not configured. Set OBSIDIAN_LOCAL_REST_API_KEY in .env.');
-        this.notion = this.obsidianClient;
-        if (this.pipeline) this.pipeline.notion = this.obsidianClient;
-        return ctx.reply('Switched to Obsidian.');
+      const clients = {
+        notion: { client: this.notionClient, label: 'Notion' },
+        obsidian: { client: this.obsidianClient, label: 'Obsidian' },
+        cognosmap: { client: this.cognosmapClient, label: 'CognosMap' },
+      };
+
+      // Explicit destination requested
+      if (requested && clients[requested]) {
+        if (!clients[requested].client) return ctx.reply(`${clients[requested].label} not configured.`);
+        this._setDestination(clients[requested].client);
+        return ctx.reply(`Switched to ${clients[requested].label}.`);
       }
 
-      // No arg -- toggle
-      if (this.isObsidian) {
-        if (!this.notionClient) return ctx.reply('Notion client not configured.');
-        this.notion = this.notionClient;
-        if (this.pipeline) this.pipeline.notion = this.notionClient;
-        return ctx.reply('Switched to Notion.');
-      } else {
-        if (!this.obsidianClient) return ctx.reply('Obsidian client not configured. Set OBSIDIAN_LOCAL_REST_API_KEY in .env.');
-        this.notion = this.obsidianClient;
-        if (this.pipeline) this.pipeline.notion = this.obsidianClient;
-        return ctx.reply('Switched to Obsidian.');
-      }
+      // No arg -- cycle through configured destinations
+      const available = Object.entries(clients).filter(([, v]) => v.client);
+      if (available.length < 2) return ctx.reply(`Only ${this.destLabel} is configured.`);
+      const currentIdx = available.findIndex(([key]) => key === this.destName);
+      const nextIdx = (currentIdx + 1) % available.length;
+      const [, next] = available[nextIdx];
+      this._setDestination(next.client);
+      return ctx.reply(`Switched to ${next.label}.`);
     });
 
     // /status command -- show current destination
@@ -697,6 +705,11 @@ class TelegramBot {
     } finally {
       this.cleanup(tempPath);
     }
+  }
+
+  _setDestination(client) {
+    this.notion = client;
+    if (this.pipeline) this.pipeline.notion = client;
   }
 
   // ─── Publish Handlers ─────────────────────────────────────────────────────
