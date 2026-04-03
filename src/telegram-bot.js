@@ -315,9 +315,15 @@ class TelegramBot {
 
   /**
    * Track a message that created a Notion page (for reply chain).
+   * Optionally track the bot's reply message too so replying to
+   * either the user's original or the bot's confirmation works.
    */
-  trackSource(messageId, pageId) {
-    this.pendingSources.set(messageId, { pageId, timestamp: Date.now() });
+  trackSource(messageId, pageId, botReplyMessageId) {
+    const entry = { pageId, timestamp: Date.now() };
+    this.pendingSources.set(messageId, entry);
+    if (botReplyMessageId) {
+      this.pendingSources.set(botReplyMessageId, entry);
+    }
   }
 
   /**
@@ -356,7 +362,7 @@ class TelegramBot {
       const status = await ctx.reply('Capturing idea...');
       try {
         const result = await this.pipeline.ingestText(text.trim());
-        this.trackSource(ctx.message.message_id, result.pageId);
+        this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
           this.formatResult(result.title, result.pageId)
@@ -377,7 +383,7 @@ class TelegramBot {
       const status = await ctx.reply(`Processing: ${url}`);
       try {
         const result = await this.pipeline.ingestUrl(url, { annotation });
-        this.trackSource(ctx.message.message_id, result.pageId);
+        this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
           this.formatResult(result.title, result.pageId)
@@ -440,7 +446,7 @@ class TelegramBot {
         metadata: {},
       });
 
-      this.trackSource(ctx.message.message_id, pageId);
+      this.trackSource(ctx.message.message_id, pageId, status.message_id);
 
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
@@ -495,7 +501,7 @@ class TelegramBot {
     try {
       tempPath = await this.downloadTelegramFile(ctx, fileObj.file_id, type);
       const result = await this.pipeline.ingestFile(tempPath, { title });
-      this.trackSource(ctx.message.message_id, result.pageId);
+      this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
         this.formatResult(result.title, result.pageId)
@@ -563,7 +569,7 @@ class TelegramBot {
           metadata: {},
         });
 
-        this.trackSource(ctx.message.message_id, pageId);
+        this.trackSource(ctx.message.message_id, pageId, status.message_id);
 
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
@@ -608,7 +614,7 @@ class TelegramBot {
           metadata: {},
         });
 
-        this.trackSource(ctx.message.message_id, pageId);
+        this.trackSource(ctx.message.message_id, pageId, status.message_id);
         await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, this.formatResult(summary?.title || title, pageId));
       } catch (error) {
         await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, `Failed: ${error.message}`);
@@ -653,7 +659,7 @@ class TelegramBot {
           metadata: {},
         });
 
-        this.trackSource(ctx.message.message_id, pageId);
+        this.trackSource(ctx.message.message_id, pageId, status.message_id);
         await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, this.formatResult(summary?.title || pdfTitle, pageId));
       } catch (error) {
         await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, `Failed: ${error.message}`);
@@ -678,7 +684,7 @@ class TelegramBot {
     try {
       tempPath = await this.downloadTelegramFile(ctx, doc.file_id, 'document', doc.file_name);
       const result = await this.pipeline.ingestFile(tempPath, { title });
-      this.trackSource(ctx.message.message_id, result.pageId);
+      this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
         this.formatResult(result.title, result.pageId)
@@ -695,32 +701,68 @@ class TelegramBot {
 
   // ─── Publish Handlers ─────────────────────────────────────────────────────
 
-  handleDraftCommand(ctx) {
+  async handleDraftCommand(ctx) {
     if (!this.postWorkflow) {
       return ctx.reply('Publishing not configured. Set TYPEFULLY_API_KEY and TYPEFULLY_SOCIAL_SET_ID in .env.');
     }
 
-    // Reply to a tracked message: save that capture's summary as a draft
+    const inlineText = ctx.message.text.replace(/^\/draft\s*/, '').trim();
     const replyTo = ctx.message?.reply_to_message;
-    if (replyTo && this.pendingSources.has(replyTo.message_id)) {
-      const { pageId } = this.pendingSources.get(replyTo.message_id);
-      // Use the replied message's text as the draft body
-      const sourceText = replyTo.text || '';
-      const inlineText = ctx.message.text.replace(/^\/draft\s*/, '').trim();
-      const text = inlineText || sourceText;
-      if (!text) return ctx.reply('Nothing to draft. Write text after /draft or reply to a capture.');
-      const { draftId } = this.postWorkflow.postStore.saveDraft(text, {
-        sourceIds: [pageId],
-        sourceTitles: [],
-      });
-      return ctx.reply(`Saved as ${draftId}. /queue to see drafts.`);
+
+    // Reply to a message: resolve the Notion page and pull its content
+    if (replyTo) {
+      const pageId = this._resolvePageId(replyTo);
+      if (pageId) {
+        const status = await ctx.reply('Fetching from Notion...');
+        try {
+          const page = await this.notionClient.getPage(pageId);
+          if (!page) {
+            return ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, 'Could not fetch page from Notion.');
+          }
+
+          // Use inline text if provided, otherwise use the page summary, fall back to content excerpt
+          const draftBody = inlineText || page.summary || page.content?.slice(0, 500) || page.title;
+          const { draftId } = this.postWorkflow.postStore.saveDraft(draftBody, {
+            sourceIds: [pageId],
+            sourceTitles: [page.title],
+          });
+          return ctx.telegram.editMessageText(
+            ctx.chat.id, status.message_id, null,
+            `Drafted from "${page.title}"\nSaved as ${draftId}. /queue to see drafts.`
+          );
+        } catch (error) {
+          return ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, `Failed: ${error.message}`);
+        }
+      }
+      // No page ID resolved -- fall through to inline text
     }
 
     // Inline text: /draft Your idea here
-    const text = ctx.message.text.replace(/^\/draft\s*/, '').trim();
-    if (!text) return ctx.reply('Usage: /draft Your idea here\nOr reply to a capture with /draft');
-    const { draftId } = this.postWorkflow.postStore.saveDraft(text, {});
+    if (!inlineText) return ctx.reply('Usage: /draft Your idea here\nOr reply to a capture with /draft');
+    const { draftId } = this.postWorkflow.postStore.saveDraft(inlineText, {});
     ctx.reply(`Saved as ${draftId}. /queue to see drafts.`);
+  }
+
+  /**
+   * Extract a Notion page ID from a replied-to message.
+   * Checks pendingSources first, then parses Notion URL from message text.
+   */
+  _resolvePageId(replyMsg) {
+    // 1. Check pendingSources (works within 30-min TTL)
+    if (this.pendingSources.has(replyMsg.message_id)) {
+      return this.pendingSources.get(replyMsg.message_id).pageId;
+    }
+
+    // 2. Parse Notion URL from message text (works for any age)
+    const text = replyMsg.text || '';
+    const match = text.match(/notion\.so\/([a-f0-9]{32})/);
+    if (match) {
+      // Convert 32-char hex to UUID format
+      const raw = match[1];
+      return `${raw.slice(0,8)}-${raw.slice(8,12)}-${raw.slice(12,16)}-${raw.slice(16,20)}-${raw.slice(20)}`;
+    }
+
+    return null;
   }
 
   async handlePostCommand(ctx) {

@@ -571,6 +571,46 @@ class NotionClient {
    * @param {string} opts.sortProperty - Property to sort by (default 'Date Added')
    * @returns {Promise<Array<{ id, title, type, summary, timestamp }>>}
    */
+  /**
+   * Fetch a single page's properties by ID.
+   * Used by /draft to pull the captured content from Notion.
+   *
+   * @param {string} pageId
+   * @returns {Promise<{ id, title, type, summary, content } | null>}
+   */
+  async getPage(pageId) {
+    try {
+      const [pageRes, blocksRes] = await Promise.all([
+        this.client.get(`/pages/${pageId}`),
+        this.client.get(`/blocks/${pageId}/children`, { params: { page_size: 100 } }),
+      ]);
+
+      const props = pageRes.data.properties || {};
+      const blocks = blocksRes.data.results || [];
+
+      // Extract text content from blocks (paragraphs, headings, lists)
+      const content = blocks
+        .filter(b => b.type === 'paragraph' || b.type === 'bulleted_list_item' || b.type === 'heading_2' || b.type === 'heading_3')
+        .map(b => {
+          const richText = b[b.type]?.rich_text || [];
+          return richText.map(t => t.plain_text).join('');
+        })
+        .filter(Boolean)
+        .join('\n');
+
+      return {
+        id: pageRes.data.id,
+        title: props['Title']?.title?.[0]?.plain_text || 'Untitled',
+        type: props['Type']?.select?.name || 'Idea',
+        summary: props['Summary']?.rich_text?.[0]?.plain_text || null,
+        content,
+      };
+    } catch (error) {
+      console.error('[Notion] getPage failed:', error.response?.data || error.message);
+      return null;
+    }
+  }
+
   async queryRecent({ limit = 5, sortProperty = 'Date Added' } = {}) {
     try {
       const response = await this.client.post(`/databases/${this.databaseId}/query`, {
