@@ -720,27 +720,53 @@ class TelegramBot {
             return ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, 'Could not fetch page from Notion.');
           }
 
-          // Use inline text if provided, otherwise use the page summary, fall back to content excerpt
           const draftBody = inlineText || page.summary || page.content?.slice(0, 500) || page.title;
-          const { draftId } = this.postWorkflow.postStore.saveDraft(draftBody, {
+          return this._saveDraftToTypefully(ctx, status, draftBody, {
             sourceIds: [pageId],
             sourceTitles: [page.title],
+            pageTitle: page.title,
           });
-          return ctx.telegram.editMessageText(
-            ctx.chat.id, status.message_id, null,
-            `Drafted from "${page.title}"\nSaved as ${draftId}. /queue to see drafts.`
-          );
         } catch (error) {
           return ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, `Failed: ${error.message}`);
         }
       }
-      // No page ID resolved -- fall through to inline text
     }
 
     // Inline text: /draft Your idea here
     if (!inlineText) return ctx.reply('Usage: /draft Your idea here\nOr reply to a capture with /draft');
-    const { draftId } = this.postWorkflow.postStore.saveDraft(inlineText, {});
-    ctx.reply(`Saved as ${draftId}. /queue to see drafts.`);
+    const status = await ctx.reply('Saving draft...');
+    return this._saveDraftToTypefully(ctx, status, inlineText, {});
+  }
+
+  /**
+   * Save draft both locally and to Typefully (as unpublished draft).
+   */
+  async _saveDraftToTypefully(ctx, status, text, { sourceIds = [], sourceTitles = [], pageTitle = null } = {}) {
+    try {
+      // 1. Save locally (git-tracked archive)
+      const { draftId } = this.postWorkflow.postStore.saveDraft(text, { sourceIds, sourceTitles });
+
+      // 2. Push to Typefully as unpublished draft
+      const platforms = {};
+      for (const p of this.postWorkflow.enabledPlatforms) platforms[p] = true;
+
+      let typefullyMsg = '';
+      try {
+        await this.postWorkflow.typefully.createDraft(text, { platforms, publishAt: null });
+        typefullyMsg = '\nDraft added to Typefully queue.';
+      } catch (err) {
+        console.warn('[TelegramBot] Typefully draft push failed:', err.message);
+        typefullyMsg = '\n(Typefully sync failed -- saved locally only)';
+      }
+
+      const fromMsg = pageTitle ? `Drafted from "${pageTitle}"` : `Saved as ${draftId}`;
+      return ctx.telegram.editMessageText(
+        ctx.chat.id, status.message_id, null,
+        `${fromMsg}${typefullyMsg}\n/queue to see drafts.`
+      );
+    } catch (error) {
+      return ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, `Failed: ${error.message}`);
+    }
   }
 
   /**
@@ -921,16 +947,30 @@ class TelegramBot {
     }
   }
 
-  handleSaveCommand(ctx) {
+  async handleSaveCommand(ctx) {
     if (!this.postWorkflow) return ctx.reply('Publishing not configured.');
     const session = this.postWorkflow.getSession(ctx.from.id);
     if (!session || !session.text) {
       return ctx.reply('Nothing to save. Use /post first.');
     }
 
+    const status = await ctx.reply('Saving draft...');
     try {
       const { draftId } = this.postWorkflow.saveDraft(ctx.from.id);
-      ctx.reply(`Saved as ${draftId}. Use /queue to see drafts.`);
+
+      // Also push to Typefully as unpublished draft
+      const platforms = {};
+      for (const p of this.postWorkflow.enabledPlatforms) platforms[p] = true;
+      let typefullyMsg = '';
+      try {
+        await this.postWorkflow.typefully.createDraft(session.text, { platforms, publishAt: null });
+        typefullyMsg = '\nDraft added to Typefully queue.';
+      } catch (err) {
+        console.warn('[TelegramBot] Typefully draft push failed:', err.message);
+        typefullyMsg = '\n(Typefully sync failed -- saved locally only)';
+      }
+
+      ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null, `Saved as ${draftId}.${typefullyMsg}\n/queue to see drafts.`);
     } catch (error) {
       ctx.reply(`Save failed: ${error.message}`);
     }
