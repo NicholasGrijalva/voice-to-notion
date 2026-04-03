@@ -1,8 +1,8 @@
 # Voice-to-Notion/Obsidian Capture System
 
-Self-hosted multi-format content capture pipeline: **Capture → Extract → Summarize → Notion or Obsidian**
+Self-hosted multi-format content capture and publishing pipeline: **Capture → Extract → Summarize → Notion/Obsidian → Publish**
 
-Captures voice notes, YouTube videos, articles, tweets, PDFs, and markdown via Telegram bot. Auto-summarizes with Groq Llama 3.3 70B. Uses [Scriberr](https://github.com/rishikanthc/Scriberr) (WhisperX) for local transcription, yt-dlp for media downloads, Mozilla Readability for article extraction.
+Captures voice notes, YouTube videos, articles, tweets, PDFs, and markdown via Telegram bot. Auto-summarizes with Groq Llama 3.3 70B. Publishes ideas to X/Twitter, LinkedIn, Bluesky, Threads, and Mastodon via Typefully. Uses [Scriberr](https://github.com/rishikanthc/Scriberr) (WhisperX) for local transcription, yt-dlp for media downloads, Mozilla Readability for article extraction.
 
 ## Quick Start
 
@@ -60,6 +60,11 @@ docker compose logs -f notion-worker
 - **PDF extraction** — text extraction via pdf-parse, sent as structured page
 - **Markdown/text files** — send .md, .txt, .markdown files via Telegram
 - **Smart URL routing** — regex-based content detection routes to correct extractor
+- **Social publishing** — publish captured ideas to X/Twitter, LinkedIn, Bluesky, Threads, Mastodon via Typefully
+- **Draft queue** — `/draft` saves post ideas instantly; `/queue` manages them; `/go N` publishes
+- **Compose flow** — `/post` walks through source selection, clarifying questions, preview with char counts
+- **Thread splitting** — auto-splits long posts into threads for character-limited platforms
+- **Post archive** — all published posts saved as git-tracked markdown with engagement tracking
 
 ## Architecture
 
@@ -119,7 +124,27 @@ Pipeline 4: Reply Chain (annotation layer)
 │ text/photo   │     │             │     │ Notion page │
 └─────────────┘     └─────────────┘     └─────────────┘
 
-Pipeline 5: Admin API (remote state management)
+Pipeline 5: Social Publishing (idea distribution)
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  /post or   │────▶│  Clarify    │────▶│  Preview    │────▶│  Typefully  │
+│  /draft     │     │  Questions  │     │ char counts │     │  v2 API     │
+│  command    │     │ (hardcoded) │     │ per platform│     │             │
+└─────────────┘     └─────────────┘     └─────────────┘     └──────┬──────┘
+       │                                                           │
+       ▼                                                     ┌─────┴─────┐
+┌─────────────┐                                              │ X/Twitter │
+│ Select from │                                              │ LinkedIn  │
+│ recent      │                                              │ Bluesky   │
+│ captures    │                                              │ Threads   │
+└─────────────┘                                              │ Mastodon  │
+                                                             └───────────┘
+                           ┌─────────────┐
+                           │ posts/      │ git-tracked archive
+                           │ published/  │ (YAML frontmatter + text)
+                           │ drafts/     │
+                           └─────────────┘
+
+Pipeline 6: Admin API (remote state management)
 ┌─────────────────────────────────────────────────────────────────┐
 │  GET  /health           → uptime + pipeline status              │
 │  GET  /state            → synced/failed counts + retry timers   │
@@ -202,7 +227,22 @@ The bot uses long-polling (no webhooks, no SSL, no exposed ports needed).
 
 Required only if you want to send photos/screenshots to the bot for OCR. All other features work without it.
 
-### 6. Start Everything
+### 6. Typefully (optional -- social publishing)
+
+1. Sign up at [typefully.com](https://typefully.com) (Creator plan, $19/mo)
+2. Connect your social accounts (X, LinkedIn, Bluesky, etc.)
+3. Go to **Settings > API** and create an API key
+4. Find your Social Set ID in Settings or via API
+5. Add to `.env`:
+   ```
+   TYPEFULLY_API_KEY=tf_your_key_here
+   TYPEFULLY_SOCIAL_SET_ID=your_social_set_id
+   PUBLISH_PLATFORMS=twitter,linkedin,bluesky
+   ```
+
+Required only for `/post`, `/draft`, `/queue`, and `/go` commands. All capture features work without it.
+
+### 7. Start Everything
 
 ```bash
 # Option A: Boot script (handles sequencing and health checks)
@@ -231,6 +271,31 @@ Send any of these to your bot:
 **Reply chain:** Reply to any bot-processed message with voice, text, or a photo to append a "My Take" section to the existing Notion page. This lets you capture a source (image, URL, video) and then add your reaction/annotation without creating a separate page.
 
 The bot replies with a link to the created Notion page.
+
+#### Publishing Commands
+
+Requires `TYPEFULLY_API_KEY` in `.env`. Publish captured ideas to social media without opening Twitter/LinkedIn/etc.
+
+| Command | What it does |
+|---------|-------------|
+| `/draft Your idea` | Save as draft instantly (1 message, like capture) |
+| (reply to capture) `/draft` | Draft from that capture's text |
+| `/post` | Full compose flow: select sources, clarify questions, write, preview |
+| `/post --skip` | Skip clarify questions, go straight to compose |
+| `/queue` | List saved drafts |
+| `/queue 3` | Preview draft #3 |
+| `/go 3` | Publish draft #3 to all platforms |
+| `/go` | Publish from active /post session |
+| `/go twitter linkedin` | Publish to specific platforms only |
+| `/thread` | Split long post into thread for X/Bluesky |
+| `/later` | Schedule for Typefully's next free slot |
+| `/save` | Save current post as draft |
+| `/edit` | Return to compose mode |
+| `/cancel` | Abandon post session |
+| `/drop 3` | Delete draft #3 |
+| `/stats` | Show published posts with engagement |
+
+**Typical flow:** Capture a voice note → bot saves to Notion → `/draft` the key insight → `/queue` when ready → `/go 1` to publish.
 
 ### From iPhone (iOS Shortcut)
 
@@ -398,6 +463,14 @@ Requires Obsidian running with the [Local REST API](https://github.com/coddingto
 | `MAX_SYNC_RETRIES` | Max retries before abandoning a failed job | 10 |
 | `ADMIN_PORT` | Admin API HTTP port | 9200 |
 
+### Social Publishing (optional)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TYPEFULLY_API_KEY` | Typefully API key (Settings > API) | (optional) |
+| `TYPEFULLY_SOCIAL_SET_ID` | Social set ID (connected accounts) | (optional) |
+| `PUBLISH_PLATFORMS` | Comma-separated platforms to publish to | `twitter,linkedin,bluesky` |
+
 ## Admin API
 
 The worker runs a lightweight HTTP admin server for remote state management. Default port: **9200** (configurable via `ADMIN_PORT`).
@@ -542,7 +615,13 @@ voice-to-notion/
 │   ├── groq-transcriber.js # Groq Whisper + LLM client (transcription + title generation)
 │   ├── media-downloader.js # yt-dlp wrapper
 │   ├── audio-extractor.js  # ffmpeg wrapper
-│   └── yt-transcript.js    # YouTube subtitle/transcript fetcher
+│   ├── yt-transcript.js    # YouTube subtitle/transcript fetcher
+│   └── publish/            # Social publishing module
+│       ├── post-workflow.js    # State machine orchestrator
+│       ├── typefully-client.js # Typefully v2 API client
+│       ├── post-store.js       # Draft/published archive CRUD
+│       ├── platforms.js        # Char limits, preview, thread splitting
+│       └── clarify-questions.js# Hardcoded sharpening questions
 ├── scripts/
 │   ├── boot.sh             # One-command startup (health checks + sequencing)
 │   ├── launchd-start.sh    # macOS launchd wrapper (persistent deployment)
@@ -551,6 +630,9 @@ voice-to-notion/
 │   └── ingest-file.js      # CLI local file ingestion
 ├── docs/
 │   └── ARCHITECTURE.md     # Comprehensive architecture documentation
+├── posts/                  # Social publishing archive (git-tracked)
+│   ├── drafts/             # Saved draft posts
+│   └── published/          # Published posts (YAML frontmatter + text)
 ├── inbox_media/            # Drop URL files here (bind-mounted)
 ├── processed/              # Completed files moved here
 ├── docker compose.yml      # One-command deployment
