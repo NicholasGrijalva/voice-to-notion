@@ -17,6 +17,10 @@ const fs = require('fs');
 const path = require('path');
 const ocr = require('./ocr');
 
+const PostWorkflow = require('./publish/post-workflow');
+const TypefullyClient = require('./publish/typefully-client');
+const PostStore = require('./publish/post-store');
+
 const URL_REGEX = /https?:\/\/[^\s]+/g;
 
 class TelegramBot {
@@ -41,6 +45,27 @@ class TelegramBot {
     this.pendingSources = new Map();
 
     this.ensureDir(this.tempDir);
+
+    // Social publishing workflow (optional -- requires TYPEFULLY_API_KEY)
+    this.postWorkflow = null;
+    if (process.env.TYPEFULLY_API_KEY && process.env.TYPEFULLY_SOCIAL_SET_ID) {
+      const typefully = new TypefullyClient(
+        process.env.TYPEFULLY_API_KEY,
+        process.env.TYPEFULLY_SOCIAL_SET_ID
+      );
+      const postStore = new PostStore(
+        path.join(__dirname, '..', 'posts')
+      );
+      const platforms = (process.env.PUBLISH_PLATFORMS || 'twitter,linkedin,bluesky')
+        .split(',').map(s => s.trim()).filter(Boolean);
+      this.postWorkflow = new PostWorkflow({
+        notionClient: this.notionClient,
+        typefullyClient: typefully,
+        postStore,
+        enabledPlatforms: platforms,
+      });
+    }
+
     this.registerHandlers();
     this.startCleanupTimer();
   }
@@ -132,6 +157,18 @@ class TelegramBot {
     this.bot.command('status', (ctx) => {
       ctx.reply(`Current destination: ${this.destLabel}`);
     });
+
+    // ── Publish commands ──────────────────────────────────────────────────
+    this.bot.command('post', (ctx) => this.handlePostCommand(ctx));
+    this.bot.command('go', (ctx) => this.handleGoCommand(ctx));
+    this.bot.command('thread', (ctx) => this.handleThreadCommand(ctx));
+    this.bot.command('save', (ctx) => this.handleSaveCommand(ctx));
+    this.bot.command('later', (ctx) => this.handleLaterCommand(ctx));
+    this.bot.command('edit', (ctx) => this.handleEditCommand(ctx));
+    this.bot.command('cancel', (ctx) => this.handleCancelCommand(ctx));
+    this.bot.command('queue', (ctx) => this.handleQueueCommand(ctx));
+    this.bot.command('drop', (ctx) => this.handleDropCommand(ctx));
+    this.bot.command('stats', (ctx) => this.handleStatsCommand(ctx));
 
     // Text messages (extract URLs, or reply chain)
     this.bot.on(message('text'), (ctx) => this.handleText(ctx));
@@ -303,6 +340,11 @@ class TelegramBot {
   async handleText(ctx) {
     // Check reply chain first
     if (await this.checkReplyChain(ctx)) return;
+
+    // Route to post session if active
+    if (this.postWorkflow?.getSession(ctx.from.id)) {
+      return this.handlePostSessionText(ctx);
+    }
 
     const text = ctx.message.text;
     const urls = text.match(URL_REGEX);
@@ -648,6 +690,316 @@ class TelegramBot {
     } finally {
       this.cleanup(tempPath);
     }
+  }
+
+  // ─── Publish Handlers ─────────────────────────────────────────────────────
+
+  async handlePostCommand(ctx) {
+    if (!this.postWorkflow) {
+      return ctx.reply('Publishing not configured. Set TYPEFULLY_API_KEY and TYPEFULLY_SOCIAL_SET_ID in .env.');
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    const skipClarify = args.includes('--skip');
+
+    const session = this.postWorkflow.startSession(ctx.from.id);
+
+    // If replying to a tracked source, pre-select it
+    const replyTo = ctx.message?.reply_to_message;
+    if (replyTo && this.pendingSources.has(replyTo.message_id)) {
+      const { pageId } = this.pendingSources.get(replyTo.message_id);
+      this.postWorkflow.preselectSource(ctx.from.id, pageId, 'Linked capture', 'Idea');
+      if (skipClarify) {
+        session.state = 'COMPOSE';
+        return ctx.reply('Source linked. Write your post:');
+      }
+      session.state = 'CLARIFY';
+      const questions = require('./publish/clarify-questions').getClarifyQuestions(['Idea']);
+      return ctx.reply(
+        `Source linked.\n\n` +
+        questions.map(q => `- ${q}`).join('\n') +
+        `\n\nWrite your post below.`
+      );
+    }
+
+    // Show recent captures for selection
+    try {
+      const captures = await this.postWorkflow.getRecentCaptures(ctx.from.id, 5);
+      if (captures.length === 0) {
+        this.postWorkflow.endSession(ctx.from.id);
+        return ctx.reply('No recent captures found. Send a voice note or URL first.');
+      }
+
+      const lines = captures.map((c, i) => {
+        const ago = this._timeAgo(c.timestamp);
+        return `${i + 1}. ${c.title} (${c.type}, ${ago})`;
+      });
+
+      ctx.reply(
+        `Recent captures:\n` +
+        lines.join('\n') +
+        `\n\nPick sources (e.g. "1 2") or write your post directly:`
+      );
+    } catch (error) {
+      this.postWorkflow.endSession(ctx.from.id);
+      ctx.reply(`Failed to load captures: ${error.message}`);
+    }
+  }
+
+  async handlePostSessionText(ctx) {
+    const session = this.postWorkflow.getSession(ctx.from.id);
+    if (!session) return;
+
+    const text = ctx.message.text.trim();
+
+    // In SELECT_SOURCES: check if input is numbers (source selection) or post text
+    if (session.state === 'SELECT_SOURCES') {
+      const numbers = text.match(/^\d[\d\s]*$/);
+      if (numbers) {
+        const indices = text.split(/\s+/).map(Number).filter(n => n > 0);
+        try {
+          const { excerpts, questions } = this.postWorkflow.selectSources(ctx.from.id, indices);
+          const contextLines = excerpts.map((e, i) => `[${indices[i]}] ${e?.slice(0, 200) || '(no summary)'}`);
+          return ctx.reply(
+            `Context from your captures:\n\n` +
+            contextLines.join('\n\n') +
+            `\n\n----\n` +
+            questions.map(q => `- ${q}`).join('\n') +
+            `\n----\n\nWrite your post below.`
+          );
+        } catch (error) {
+          return ctx.reply(`Error: ${error.message}`);
+        }
+      }
+      // Not numbers -- treat as direct post text (skip source selection)
+    }
+
+    // In CLARIFY or COMPOSE or SELECT_SOURCES (with text): set post text
+    if (session.state === 'SELECT_SOURCES' || session.state === 'CLARIFY' || session.state === 'COMPOSE') {
+      try {
+        const { preview } = this.postWorkflow.setPostText(ctx.from.id, text);
+        return ctx.reply(this._formatPreviewMessage(preview));
+      } catch (error) {
+        return ctx.reply(`Error: ${error.message}`);
+      }
+    }
+  }
+
+  async handleGoCommand(ctx) {
+    if (!this.postWorkflow) return ctx.reply('Publishing not configured.');
+
+    const args = ctx.message.text.split(' ').slice(1);
+
+    // /go 3 -- publish draft #3
+    const draftNum = parseInt(args[0], 10);
+    if (draftNum > 0 && !this.postWorkflow.getSession(ctx.from.id)) {
+      const drafts = this.postWorkflow.listDrafts();
+      const draft = drafts[draftNum - 1];
+      if (!draft) return ctx.reply(`Draft #${draftNum} not found.`);
+
+      const status = await ctx.reply('Publishing draft...');
+      try {
+        const result = await this.postWorkflow.publishDraft(draft.id);
+        return ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          `Published! Draft archived as ${result.archiveId}`
+        );
+      } catch (error) {
+        return ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          `Publish failed: ${error.message}`
+        );
+      }
+    }
+
+    // /go or /go twitter linkedin -- publish from session
+    const session = this.postWorkflow.getSession(ctx.from.id);
+    if (!session || session.state !== 'PREVIEW') {
+      return ctx.reply('Nothing to publish. Use /post first.');
+    }
+
+    const platformFilter = args.length > 0 ? args : null;
+    const status = await ctx.reply('Publishing...');
+    try {
+      const result = await this.postWorkflow.publish(ctx.from.id, { platformFilter });
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, status.message_id, null,
+        `Published! Archived as ${result.archiveId}`
+      );
+    } catch (error) {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, status.message_id, null,
+        `Publish failed: ${error.message}`
+      );
+    }
+  }
+
+  handleThreadCommand(ctx) {
+    if (!this.postWorkflow) return ctx.reply('Publishing not configured.');
+    const session = this.postWorkflow.getSession(ctx.from.id);
+    if (!session || session.state !== 'PREVIEW') {
+      return ctx.reply('Nothing to split. Use /post first, write text, then /thread.');
+    }
+
+    try {
+      const { threadPosts } = this.postWorkflow.splitIntoThread(ctx.from.id);
+      const threadPreview = threadPosts.map((t, i) => `${i + 1}/${threadPosts.length}: ${t}`).join('\n\n');
+      ctx.reply(`Thread preview:\n\n${threadPreview}\n\n/go to post | /edit to revise`);
+    } catch (error) {
+      ctx.reply(`Error: ${error.message}`);
+    }
+  }
+
+  handleSaveCommand(ctx) {
+    if (!this.postWorkflow) return ctx.reply('Publishing not configured.');
+    const session = this.postWorkflow.getSession(ctx.from.id);
+    if (!session || !session.text) {
+      return ctx.reply('Nothing to save. Use /post first.');
+    }
+
+    try {
+      const { draftId } = this.postWorkflow.saveDraft(ctx.from.id);
+      ctx.reply(`Saved as ${draftId}. Use /queue to see drafts.`);
+    } catch (error) {
+      ctx.reply(`Save failed: ${error.message}`);
+    }
+  }
+
+  async handleLaterCommand(ctx) {
+    if (!this.postWorkflow) return ctx.reply('Publishing not configured.');
+    const session = this.postWorkflow.getSession(ctx.from.id);
+    if (!session || session.state !== 'PREVIEW') {
+      return ctx.reply('Nothing to schedule. Use /post first.');
+    }
+
+    const status = await ctx.reply('Scheduling...');
+    try {
+      const result = await this.postWorkflow.publish(ctx.from.id, { publishAt: 'next-free-slot' });
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, status.message_id, null,
+        `Scheduled for next free slot. Archived as ${result.archiveId}`
+      );
+    } catch (error) {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, status.message_id, null,
+        `Schedule failed: ${error.message}`
+      );
+    }
+  }
+
+  handleEditCommand(ctx) {
+    if (!this.postWorkflow) return ctx.reply('Publishing not configured.');
+    const session = this.postWorkflow.getSession(ctx.from.id);
+    if (!session) return ctx.reply('No active post session.');
+
+    this.postWorkflow.returnToCompose(ctx.from.id);
+    ctx.reply('Back to compose. Write your revised post:');
+  }
+
+  handleCancelCommand(ctx) {
+    if (!this.postWorkflow) return;
+    if (this.postWorkflow.getSession(ctx.from.id)) {
+      this.postWorkflow.endSession(ctx.from.id);
+      ctx.reply('Post cancelled.');
+    }
+  }
+
+  handleQueueCommand(ctx) {
+    if (!this.postWorkflow) return ctx.reply('Publishing not configured.');
+
+    const args = ctx.message.text.split(' ').slice(1);
+    const draftNum = parseInt(args[0], 10);
+
+    // /queue 3 -- preview specific draft
+    if (draftNum > 0) {
+      const drafts = this.postWorkflow.listDrafts();
+      const draft = drafts[draftNum - 1];
+      if (!draft) return ctx.reply(`Draft #${draftNum} not found.`);
+      const sources = draft.source_titles?.length > 0
+        ? `\nSources: ${draft.source_titles.join(', ')}`
+        : '';
+      return ctx.reply(
+        `Draft #${draftNum}: ${draft.id}\n\n${draft.text}${sources}\n\n` +
+        `/go ${draftNum} to publish | /drop ${draftNum} to delete`
+      );
+    }
+
+    // /queue -- list all drafts
+    const drafts = this.postWorkflow.listDrafts();
+    if (drafts.length === 0) return ctx.reply('No saved drafts.');
+
+    const lines = drafts.map((d, i) => {
+      const preview = d.text?.slice(0, 60) || '(empty)';
+      return `${i + 1}. ${preview}...`;
+    });
+    ctx.reply(`Drafts:\n${lines.join('\n')}\n\nUse /queue N to preview.`);
+  }
+
+  handleDropCommand(ctx) {
+    if (!this.postWorkflow) return ctx.reply('Publishing not configured.');
+    const args = ctx.message.text.split(' ').slice(1);
+    const draftNum = parseInt(args[0], 10);
+    if (!draftNum || draftNum < 1) return ctx.reply('Usage: /drop N');
+
+    const drafts = this.postWorkflow.listDrafts();
+    const draft = drafts[draftNum - 1];
+    if (!draft) return ctx.reply(`Draft #${draftNum} not found.`);
+
+    this.postWorkflow.deleteDraft(draft.id);
+    ctx.reply(`Deleted draft #${draftNum}.`);
+  }
+
+  handleStatsCommand(ctx) {
+    if (!this.postWorkflow) return ctx.reply('Publishing not configured.');
+
+    const args = ctx.message.text.split(' ').slice(1);
+    const limit = parseInt(args[0], 10) || 5;
+
+    const posts = this.postWorkflow.postStore.listPublished({ limit });
+    if (posts.length === 0) return ctx.reply('No published posts yet.');
+
+    const lines = posts.map((p, i) => {
+      const date = p.date ? new Date(p.date).toLocaleDateString() : 'unknown';
+      const preview = p.text?.slice(0, 50) || '(empty)';
+      const eng = p.engagement || {};
+      const totalLikes = Object.values(eng).reduce((sum, e) => sum + (e.likes || 0), 0);
+      return `${i + 1}. [${date}] ${preview}... (${totalLikes} likes)`;
+    });
+    ctx.reply(`Published posts:\n${lines.join('\n')}`);
+  }
+
+  // ── Publish Helpers ─────────────────────────────────────────────────────
+
+  _formatPreviewMessage(preview) {
+    const lines = Object.entries(preview.platforms).map(([key, p]) => {
+      const label = key.charAt(0).toUpperCase() + key.slice(1);
+      const pad = '.'.repeat(Math.max(1, 12 - label.length));
+      const status = p.ok ? '' : ' OVER';
+      return `${label} ${pad} ${p.chars}/${p.maxChars}${status}`;
+    });
+
+    let msg = `Preview:\n\n${lines.join('\n')}`;
+
+    if (preview.overLimit.length > 0) {
+      msg += `\n\n${preview.overLimit.join(', ')} over limit.`;
+      if (preview.needsThread.length > 0) {
+        msg += ` /thread to split.`;
+      }
+    }
+
+    msg += `\n\n/go Post now | /later Schedule\n/thread Split | /save Save draft\n/edit Revise | /cancel Abandon`;
+    return msg;
+  }
+
+  _timeAgo(timestamp) {
+    if (!timestamp) return 'unknown';
+    const diff = Date.now() - new Date(timestamp).getTime();
+    const minutes = Math.floor(diff / 60000);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
   }
 
   // ─── Utilities ─────────────────────────────────────────────────────────────

@@ -562,6 +562,38 @@ class NotionClient {
     }
   }
 
+  /**
+   * Query the database for recent pages.
+   * Used by the publish workflow to show recent captures for source selection.
+   *
+   * @param {Object} opts
+   * @param {number} opts.limit - Max pages to return (default 5)
+   * @param {string} opts.sortProperty - Property to sort by (default 'Date Added')
+   * @returns {Promise<Array<{ id, title, type, summary, timestamp }>>}
+   */
+  async queryRecent({ limit = 5, sortProperty = 'Date Added' } = {}) {
+    try {
+      const response = await this.client.post(`/databases/${this.databaseId}/query`, {
+        sorts: [{ property: sortProperty, direction: 'descending' }],
+        page_size: limit,
+      });
+
+      return (response.data.results || []).map(page => {
+        const props = page.properties || {};
+        return {
+          id: page.id,
+          title: props['Title']?.title?.[0]?.plain_text || 'Untitled',
+          type: props['Type']?.select?.name || 'Idea',
+          summary: props['Summary']?.rich_text?.[0]?.plain_text || null,
+          timestamp: props[sortProperty]?.date?.start || page.created_time,
+        };
+      });
+    } catch (error) {
+      console.error('[Notion] Query failed:', error.response?.data || error.message);
+      return [];
+    }
+  }
+
 }
 
 module.exports = NotionClient;
