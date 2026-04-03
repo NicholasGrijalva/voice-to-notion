@@ -279,7 +279,7 @@ Requires `TYPEFULLY_API_KEY` in `.env`. Publish captured ideas to social media w
 | Command | What it does |
 |---------|-------------|
 | `/draft Your idea` | Save as draft instantly (1 message, like capture) |
-| (reply to capture) `/draft` | Draft from that capture's text |
+| (reply to bot msg) `/draft` | Fetch summary from Notion and save as draft |
 | `/post` | Full compose flow: select sources, clarify questions, write, preview |
 | `/post --skip` | Skip clarify questions, go straight to compose |
 | `/queue` | List saved drafts |
@@ -295,7 +295,9 @@ Requires `TYPEFULLY_API_KEY` in `.env`. Publish captured ideas to social media w
 | `/drop 3` | Delete draft #3 |
 | `/stats` | Show published posts with engagement |
 
-**Typical flow:** Capture a voice note → bot saves to Notion → `/draft` the key insight → `/queue` when ready → `/go 1` to publish.
+**Typical flow:** Capture a voice note → bot saves to Notion → reply to the bot's message with `/draft` → bot pulls the summary from Notion and saves it as a draft → `/queue` when ready → `/go 1` to publish.
+
+The `/draft` reply works on any bot confirmation message, even old ones (it extracts the Notion page ID from the URL in the message).
 
 ### From iPhone (iOS Shortcut)
 

@@ -485,6 +485,8 @@ Thin handlers that call `PostWorkflow` and format results as chat messages. All 
 
 | Command | Description | State Required |
 |---------|-------------|----------------|
+| `/draft text` | Save text as draft instantly (1-message) | any (no session) |
+| (reply to bot msg) `/draft` | Fetch page summary from Notion, save as draft | any (no session) |
 | `/post` | Start a new post (shows recent captures) | IDLE |
 | `/post --skip` | Start without clarify questions | IDLE |
 | (reply to bot msg with `/post`) | Pre-select that capture as source | IDLE |
