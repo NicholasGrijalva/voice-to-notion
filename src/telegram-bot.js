@@ -159,6 +159,7 @@ class TelegramBot {
     });
 
     // ── Publish commands ──────────────────────────────────────────────────
+    this.bot.command('draft', (ctx) => this.handleDraftCommand(ctx));
     this.bot.command('post', (ctx) => this.handlePostCommand(ctx));
     this.bot.command('go', (ctx) => this.handleGoCommand(ctx));
     this.bot.command('thread', (ctx) => this.handleThreadCommand(ctx));
@@ -693,6 +694,34 @@ class TelegramBot {
   }
 
   // ─── Publish Handlers ─────────────────────────────────────────────────────
+
+  handleDraftCommand(ctx) {
+    if (!this.postWorkflow) {
+      return ctx.reply('Publishing not configured. Set TYPEFULLY_API_KEY and TYPEFULLY_SOCIAL_SET_ID in .env.');
+    }
+
+    // Reply to a tracked message: save that capture's summary as a draft
+    const replyTo = ctx.message?.reply_to_message;
+    if (replyTo && this.pendingSources.has(replyTo.message_id)) {
+      const { pageId } = this.pendingSources.get(replyTo.message_id);
+      // Use the replied message's text as the draft body
+      const sourceText = replyTo.text || '';
+      const inlineText = ctx.message.text.replace(/^\/draft\s*/, '').trim();
+      const text = inlineText || sourceText;
+      if (!text) return ctx.reply('Nothing to draft. Write text after /draft or reply to a capture.');
+      const { draftId } = this.postWorkflow.postStore.saveDraft(text, {
+        sourceIds: [pageId],
+        sourceTitles: [],
+      });
+      return ctx.reply(`Saved as ${draftId}. /queue to see drafts.`);
+    }
+
+    // Inline text: /draft Your idea here
+    const text = ctx.message.text.replace(/^\/draft\s*/, '').trim();
+    if (!text) return ctx.reply('Usage: /draft Your idea here\nOr reply to a capture with /draft');
+    const { draftId } = this.postWorkflow.postStore.saveDraft(text, {});
+    ctx.reply(`Saved as ${draftId}. /queue to see drafts.`);
+  }
 
   async handlePostCommand(ctx) {
     if (!this.postWorkflow) {
