@@ -69,7 +69,7 @@ const AdminServer = require('./admin');
 // Validate required environment variables
 // Notion keys are only required if not using CognosMap as destination
 const destination = (process.env.DESTINATION || 'notion').toLowerCase();
-const required = ['SCRIBERR_API_URL', 'SCRIBERR_USERNAME', 'SCRIBERR_PASSWORD'];
+const required = [];
 if (destination !== 'cognosmap') {
   required.push('NOTION_API_KEY', 'NOTION_DATABASE_ID');
 }
@@ -238,9 +238,13 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Start both pipelines
 async function main() {
-  // Authenticate with Scriberr (register on first run, then login)
-  console.log('[Worker] Authenticating with Scriberr...');
-  await scriberr.init();
+  // Authenticate with Scriberr (optional — Groq can handle transcription alone)
+  try {
+    console.log('[Worker] Authenticating with Scriberr...');
+    await scriberr.init();
+  } catch (err) {
+    console.warn(`[Worker] Scriberr unavailable (${err.message}) — running Groq-only mode`);
+  }
 
   console.log('[Worker] Starting pipelines...\n');
 
