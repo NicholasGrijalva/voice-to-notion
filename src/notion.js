@@ -168,7 +168,7 @@ class NotionClient {
    * @param {Object} options.metadata - Additional metadata (duration, language, processingTime, url)
    * @returns {Promise<string>} Created page ID
    */
-  async createTranscriptPage({ title, transcript, source = 'Audio', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {} }) {
+  async createTranscriptPage({ title, transcript, source = 'Audio', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {}, telegramMessageId = null }) {
     // Ensure transcript is always a string
     transcript = typeof transcript === 'string' ? transcript : String(transcript || '');
 
@@ -207,6 +207,11 @@ class NotionClient {
           }
         }
       };
+
+      // Telegram Message ID (for reconciliation)
+      if (telegramMessageId) {
+        properties['Telegram ID'] = { number: telegramMessageId };
+      }
 
       // Source Filename (if available)
       if (sourceFilename) {
@@ -453,6 +458,12 @@ class NotionClient {
         console.log('[Notion] Will create "Source" property');
       }
 
+      // --- Telegram ID number property (for reconciliation) ---
+      if (!properties['Telegram ID']) {
+        patchPayload['Telegram ID'] = { number: {} };
+        console.log('[Notion] Will create "Telegram ID" property');
+      }
+
       // Apply schema updates if any
       if (Object.keys(patchPayload).length > 0) {
         await this.client.patch(`/databases/${this.databaseId}`, {
@@ -489,7 +500,7 @@ class NotionClient {
    * Create a page with structured Summary + Content sections.
    * Used by the enhanced pipeline (summarizer-enabled flow).
    */
-  async createStructuredPage({ title, content, summary = null, source = 'Idea', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {}, annotation = null }) {
+  async createStructuredPage({ title, content, summary = null, source = 'Idea', sourceFilename = null, sourceRef = null, audioFileUploadId = null, imageFileUploadId = null, metadata = {}, annotation = null, telegramMessageId = null }) {
     content = typeof content === 'string' ? content : String(content || '');
     try {
       const properties = {
@@ -498,6 +509,7 @@ class NotionClient {
         'Date Added': { date: { start: new Date().toISOString() } },
         'Type': { select: { name: source } },
       };
+      if (telegramMessageId) properties['Telegram ID'] = { number: telegramMessageId };
       if (sourceFilename) properties['Source Filename'] = { rich_text: [{ text: { content: sourceFilename.slice(0, 2000) } }] };
       if (sourceRef) properties['Source'] = { rich_text: [{ text: { content: sourceRef.slice(0, 2000) } }] };
       if (metadata.processingTime) properties['Processing Time (s)'] = { number: metadata.processingTime };
@@ -634,6 +646,79 @@ class NotionClient {
     }
   }
 
+  /**
+   * Get all Telegram message IDs stored in the database.
+   * Used by the reconciler to find which messages have already been synced.
+   * @returns {Promise<Set<number>>}
+   */
+  async queryAllTelegramIds() {
+    const ids = new Set();
+    let startCursor = undefined;
+
+    do {
+      const body = {
+        filter: {
+          property: 'Telegram ID',
+          number: { is_not_empty: true }
+        },
+        page_size: 100,
+      };
+      if (startCursor) body.start_cursor = startCursor;
+
+      const response = await this.client.post(`/databases/${this.databaseId}/query`, body);
+
+      for (const page of response.data.results) {
+        const tgId = page.properties['Telegram ID']?.number;
+        if (tgId) ids.add(tgId);
+      }
+
+      startCursor = response.data.has_more ? response.data.next_cursor : undefined;
+    } while (startCursor);
+
+    return ids;
+  }
+
+  /**
+   * Query pages by date range (for fuzzy matching legacy pages without Telegram ID).
+   * @param {string} after - ISO date string
+   * @param {string} before - ISO date string
+   * @returns {Promise<Array<{ id, title, type, timestamp, telegramId }>>}
+   */
+  async queryByDateRange(after, before) {
+    const pages = [];
+    let startCursor = undefined;
+
+    do {
+      const body = {
+        filter: {
+          and: [
+            { property: 'Date Added', date: { on_or_after: after } },
+            { property: 'Date Added', date: { on_or_before: before } },
+          ]
+        },
+        sorts: [{ property: 'Date Added', direction: 'ascending' }],
+        page_size: 100,
+      };
+      if (startCursor) body.start_cursor = startCursor;
+
+      const response = await this.client.post(`/databases/${this.databaseId}/query`, body);
+
+      for (const page of response.data.results) {
+        const props = page.properties || {};
+        pages.push({
+          id: page.id,
+          title: props['Title']?.title?.[0]?.plain_text || 'Untitled',
+          type: props['Type']?.select?.name || 'Idea',
+          timestamp: props['Date Added']?.date?.start || page.created_time,
+          telegramId: props['Telegram ID']?.number || null,
+        });
+      }
+
+      startCursor = response.data.has_more ? response.data.next_cursor : undefined;
+    } while (startCursor);
+
+    return pages;
+  }
 }
 
 module.exports = NotionClient;

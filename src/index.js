@@ -57,6 +57,7 @@ ENVIRONMENT
 
 require('dotenv').config();
 
+const path = require('path');
 const ScriberrClient = require('./scriberr');
 const NotionClient = require('./notion');
 const ObsidianClient = require('./obsidian');
@@ -102,7 +103,7 @@ const config = {
     audioFormat: process.env.AUDIO_FORMAT || 'mp3',
     inboxDir: process.env.MEDIA_INBOX_DIR || './data/inbox_media',
     processedDir: process.env.MEDIA_PROCESSED_DIR || './data/processed',
-    tempDir: process.env.TEMP_DIR || '/tmp/media-pipeline'
+    tempDir: process.env.TEMP_DIR || path.join(__dirname, '..', 'data', 'tmp')
   }
 };
 

@@ -265,7 +265,8 @@ class MediaPipeline {
           language: transcript.language || 'en',
           processingTime: Math.round(processingTime),
           url: sourceUrl
-        }
+        },
+        telegramMessageId: opts.telegramMessageId || null,
       });
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -382,7 +383,8 @@ class MediaPipeline {
           language: transcript.language || 'en',
           processingTime: Math.round(processingTime),
           url: null
-        }
+        },
+        telegramMessageId: opts.telegramMessageId || null,
       });
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -579,6 +581,7 @@ class MediaPipeline {
           processingTime: Math.round(processingTime),
         },
         annotation: opts.annotation || null,
+        telegramMessageId: opts.telegramMessageId || null,
       });
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -625,6 +628,7 @@ class MediaPipeline {
       metadata: {
         processingTime: Math.round(processingTime),
       },
+      telegramMessageId: opts.telegramMessageId || null,
     });
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -718,6 +722,7 @@ class MediaPipeline {
         url,
       },
       annotation: opts.annotation || null,
+      telegramMessageId: opts.telegramMessageId || null,
     });
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

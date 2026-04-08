@@ -12,6 +12,8 @@
     "test:connection": "node scripts/test-connection.js",
     "ingest": "node scripts/ingest-url.js",
     "ingest-file": "node scripts/ingest-file.js",
+    "telegram-auth": "node src/telegram-auth.js",
+    "reconcile": "node scripts/reconcile.js",
     "setup": "pip install -r requirements.txt",
     "postinstall": "echo 'Run npm run setup to install Python deps (yt-dlp, curl_cffi)'"
   },
@@ -36,6 +38,8 @@
     "enquirer": "^2.4.1",
     "fast-glob": "^3.3.3",
     "form-data": "^4.0.0",
+    "telegram": "^2.26.0",
+    "input": "^1.0.1",
     "telegraf": "^4.16.3",
     "jsdom": "^25.0.0",
     "@mozilla/readability": "^0.5.0",

@@ -11,7 +11,7 @@ class AudioExtractor {
   constructor(options = {}) {
     this.ffmpegPath = options.ffmpegPath || 'ffmpeg';
     this.ffprobePath = options.ffprobePath || 'ffprobe';
-    this.outputDir = options.outputDir || '/tmp/audio-extracted';
+    this.outputDir = options.outputDir || path.join(__dirname, '..', 'data', 'tmp', 'extracted');
     this.timeout = options.timeout || 300000; // 5 min default
     this.ensureDir(this.outputDir);
   }
@@ -49,6 +49,9 @@ class AudioExtractor {
     const baseName = outputFilename ||
       path.basename(inputPath, path.extname(inputPath));
     const outputPath = path.join(this.outputDir, `${baseName}.${format}`);
+
+    // Re-ensure output dir exists (macOS cleans /tmp periodically)
+    this.ensureDir(this.outputDir);
 
     const args = [
       '-i', inputPath,

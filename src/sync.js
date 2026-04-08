@@ -10,7 +10,7 @@ const NotionClient = require('./notion');
 
 // State file for tracking synced jobs
 const STATE_FILE = process.env.STATE_FILE || './data/.sync-state.json';
-const TEMP_DIR = process.env.TEMP_DIR || '/tmp/audio-downloads';
+const TEMP_DIR = process.env.TEMP_DIR || path.join(__dirname, '..', 'data', 'tmp');
 
 class SyncWorker {
   constructor(scriberrClient, notionClient, pollInterval = 30000, groqTranscriber = null) {

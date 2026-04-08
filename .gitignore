@@ -27,6 +27,7 @@ Thumbs.db
 
 # Temp files
 /tmp/
+data/tmp/
 *.tmp
 
 # Media pipeline working dirs (contents are transient)

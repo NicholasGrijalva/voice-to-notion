@@ -369,7 +369,7 @@ class TelegramBot {
       if (text.trim().length < 2) return;
       const status = await ctx.reply('Capturing idea...');
       try {
-        const result = await this.pipeline.ingestText(text.trim());
+        const result = await this.pipeline.ingestText(text.trim(), { telegramMessageId: ctx.message.message_id });
         this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
@@ -390,7 +390,7 @@ class TelegramBot {
     for (const url of urls) {
       const status = await ctx.reply(`Processing: ${url}`);
       try {
-        const result = await this.pipeline.ingestUrl(url, { annotation });
+        const result = await this.pipeline.ingestUrl(url, { annotation, telegramMessageId: ctx.message.message_id });
         this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
@@ -452,6 +452,7 @@ class TelegramBot {
         source: 'Idea',
         imageFileUploadId,
         metadata: {},
+        telegramMessageId: ctx.message.message_id,
       });
 
       this.trackSource(ctx.message.message_id, pageId, status.message_id);
@@ -508,7 +509,7 @@ class TelegramBot {
 
     try {
       tempPath = await this.downloadTelegramFile(ctx, fileObj.file_id, type);
-      const result = await this.pipeline.ingestFile(tempPath, { title });
+      const result = await this.pipeline.ingestFile(tempPath, { title, telegramMessageId: ctx.message.message_id });
       this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
@@ -575,6 +576,7 @@ class TelegramBot {
           sourceFilename: doc.file_name,
           imageFileUploadId,
           metadata: {},
+          telegramMessageId: ctx.message.message_id,
         });
 
         this.trackSource(ctx.message.message_id, pageId, status.message_id);
@@ -620,6 +622,7 @@ class TelegramBot {
           source: 'Idea',
           sourceFilename: doc.file_name,
           metadata: {},
+          telegramMessageId: ctx.message.message_id,
         });
 
         this.trackSource(ctx.message.message_id, pageId, status.message_id);
@@ -665,6 +668,7 @@ class TelegramBot {
           source: 'Idea',
           sourceFilename: doc.file_name,
           metadata: {},
+          telegramMessageId: ctx.message.message_id,
         });
 
         this.trackSource(ctx.message.message_id, pageId, status.message_id);
@@ -691,7 +695,7 @@ class TelegramBot {
 
     try {
       tempPath = await this.downloadTelegramFile(ctx, doc.file_id, 'document', doc.file_name);
-      const result = await this.pipeline.ingestFile(tempPath, { title });
+      const result = await this.pipeline.ingestFile(tempPath, { title, telegramMessageId: ctx.message.message_id });
       this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
