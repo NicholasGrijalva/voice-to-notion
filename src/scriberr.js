@@ -257,7 +257,7 @@ class ScriberrClient {
     try {
       const response = await this.client.post('/api/v1/transcription/submit', form, {
         headers: form.getHeaders(),
-        timeout: 120000,
+        timeout: 300000,
         maxContentLength: Infinity,
         maxBodyLength: Infinity
       });
