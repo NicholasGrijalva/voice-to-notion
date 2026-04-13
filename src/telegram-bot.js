@@ -39,6 +39,7 @@ class TelegramBot {
       this.notion = notionClient;
     }
     this.tempDir = tempDir || '/tmp/telegram-downloads';
+    this.startedAt = new Date();
 
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) throw new Error('TELEGRAM_BOT_TOKEN not set');
@@ -161,10 +162,8 @@ class TelegramBot {
       return ctx.reply(`Switched to ${next.label}.`);
     });
 
-    // /status command -- show current destination
-    this.bot.command('status', (ctx) => {
-      ctx.reply(`Current destination: ${this.destLabel}`);
-    });
+    // /status command -- system health dashboard
+    this.bot.command('status', (ctx) => this.handleStatusCommand(ctx));
 
     // ── Publish commands ──────────────────────────────────────────────────
     this.bot.command('draft', (ctx) => this.handleDraftCommand(ctx));
@@ -1094,6 +1093,70 @@ class TelegramBot {
       return `${i + 1}. [${date}] ${preview}... (${totalLikes} likes)`;
     });
     ctx.reply(`Published posts:\n${lines.join('\n')}`);
+  }
+
+  // ── Status Dashboard ────────────────────────────────────────────────────
+
+  async handleStatusCommand(ctx) {
+    const status = await ctx.reply('Checking systems...');
+
+    const adminPort = process.env.ADMIN_PORT || 9200;
+
+    // Probe all subsystems in parallel
+    const [scriberrOk, destOk, adminState, adminHealth] = await Promise.all([
+      this.pipeline.scriberr?.healthCheck().catch(() => false) ?? Promise.resolve(false),
+      this.notion.testConnection().catch(() => false),
+      axios.get(`http://localhost:${adminPort}/state`, { timeout: 3000 })
+        .then(r => r.data).catch(() => null),
+      axios.get(`http://localhost:${adminPort}/health`, { timeout: 3000 })
+        .then(r => r.data).catch(() => null),
+    ]);
+
+    const tag = (ok) => ok ? '[OK]' : '[!!]';
+    const groqOk = !!this.pipeline.groq;
+    const summarizerOk = !!this.pipeline.summarizer;
+
+    // Uptime
+    const uptimeMs = Date.now() - this.startedAt.getTime();
+    const uptimeH = Math.floor(uptimeMs / 3600000);
+    const uptimeM = Math.floor((uptimeMs % 3600000) / 60000);
+    const uptimeStr = uptimeH > 0 ? `${uptimeH}h ${uptimeM}m` : `${uptimeM}m`;
+
+    const lines = [
+      'Voice-to-Notion v3.0',
+      '',
+      'SERVICES',
+      `  ${tag(destOk)}  ${this.destLabel} (destination)`,
+      `  ${tag(scriberrOk)}  Scriberr (WhisperX)`,
+      `  ${tag(groqOk)}  Groq (transcription)`,
+      `  ${tag(summarizerOk)}  Summarizer (Llama 3.3)`,
+      `  ${tag(adminHealth)}  Admin API (:${adminPort})`,
+      '',
+      'PIPELINES',
+      `  ${tag(adminHealth?.isRunning)}  Sync Worker`,
+      `  ${tag(this.pipeline.isRunning)}  Media Pipeline`,
+      `  [OK]  Telegram Bot`,
+      '',
+    ];
+
+    if (adminState) {
+      lines.push('SYNC');
+      lines.push(`  Synced: ${adminState.syncedCount}  Failed: ${adminState.failedCount}`);
+      if (adminState.failedCount > 0) {
+        for (const [id, info] of Object.entries(adminState.failed)) {
+          lines.push(`  [!!] ${id.slice(0, 8)}... retry ${info.retriesIn}`);
+        }
+      }
+      lines.push('');
+    }
+
+    lines.push(`Uptime: ${uptimeStr}`);
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id, status.message_id, null,
+      lines.join('\n'),
+      { parse_mode: undefined }
+    );
   }
 
   // ── Publish Helpers ─────────────────────────────────────────────────────
