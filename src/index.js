@@ -9,7 +9,7 @@
 // --help flag
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
   console.log(`
-Voice-to-Notion Worker v2.1
+Voice-to-Notion Worker v3.0
 Multi-format content capture pipeline: Capture -> Extract -> Summarize -> Notion/Obsidian
 
 USAGE
@@ -108,7 +108,7 @@ const config = {
 };
 
 console.log('╔═══════════════════════════════════════════════════════════╗');
-console.log('║         Voice-to-Notion Worker v2.1                      ║');
+console.log('║         Voice-to-Notion Worker v3.0                      ║');
 console.log('╚═══════════════════════════════════════════════════════════╝');
 console.log('');
 console.log('[Worker] Configuration:');
