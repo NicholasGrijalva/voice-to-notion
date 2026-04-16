@@ -550,8 +550,16 @@ class MediaPipeline {
       }
 
       if (!extracted || !extracted.content) {
-        console.warn(`[MediaPipeline] Extraction failed for ${route.type}, falling back to yt-dlp`);
-        return this.ingest(url, opts);
+        if (ContentRouter.isMediaUrl(url)) {
+          console.warn(`[MediaPipeline] Extraction failed for ${route.type}, falling back to yt-dlp`);
+          return this.ingest(url, opts);
+        }
+        // Non-media URL: save with whatever we have rather than running yt-dlp
+        console.warn(`[MediaPipeline] Extraction failed for ${route.type}: ${url}`);
+        extracted = {
+          title: this.webScraper.titleFromUrl(url),
+          content: `[Content could not be extracted]\n\nSource: ${url}`,
+        };
       }
 
       // Summarize
@@ -595,9 +603,11 @@ class MediaPipeline {
         // Extraction succeeded but downstream failed (summarization, page creation) -- don't discard work
         throw error;
       }
-      console.error(`[MediaPipeline] Smart ingest failed: ${error.message}`);
-      // Last resort: try standard ingest
-      return this.ingest(url, opts);
+      if (ContentRouter.isMediaUrl(url)) {
+        console.error(`[MediaPipeline] Smart ingest failed, falling back to yt-dlp: ${error.message}`);
+        return this.ingest(url, opts);
+      }
+      throw new Error(`Failed to process ${url}: ${error.message}`);
     }
   }
 
@@ -628,6 +638,115 @@ class MediaPipeline {
       metadata: {
         processingTime: Math.round(processingTime),
       },
+      telegramMessageId: opts.telegramMessageId || null,
+    });
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const locationUrl = this.formatLocation(pageId);
+    console.log(`[MediaPipeline] === Complete: ${title} (${elapsed}s) -> ${locationUrl} ===\n`);
+
+    return { pageId, notionUrl: locationUrl, title };
+  }
+
+  /**
+   * Extract content from a URL without creating a note.
+   * Used by multi-URL message handling to gather content before merging.
+   *
+   * @param {string} url
+   * @returns {Promise<{ title: string, content: string, author: string|null, type: string, url: string }>}
+   */
+  async extractUrl(url) {
+    const route = ContentRouter.detect(url);
+
+    // YouTube/media URLs can't be text-extracted -- return metadata pointer
+    if (route.type === 'youtube' || ContentRouter.isMediaUrl(url)) {
+      return { title: url, content: `[Media URL -- requires separate processing]\n\n${url}`, author: null, type: route.type, url };
+    }
+
+    try {
+      let extracted = null;
+      switch (route.type) {
+        case 'twitter':
+          extracted = await this.twitterExtractor.extract(url, route.id);
+          break;
+        case 'pdf':
+          const pdfResult = await this.webScraper.extractPdf(url);
+          if (pdfResult) {
+            extracted = { title: pdfResult.title, content: pdfResult.content, author: pdfResult.author };
+          }
+          break;
+        case 'perplexity':
+        case 'linkedin':
+        case 'webpage':
+        default:
+          extracted = await this.webScraper.extract(url);
+          break;
+      }
+
+      if (!extracted || !extracted.content) {
+        return {
+          title: this.webScraper.titleFromUrl(url),
+          content: `[Content could not be extracted]\n\nSource: ${url}`,
+          author: null, type: route.type, url,
+        };
+      }
+
+      return { ...extracted, type: route.type, url };
+    } catch (error) {
+      console.error(`[MediaPipeline] extractUrl failed for ${url}: ${error.message}`);
+      return {
+        title: this.webScraper.titleFromUrl(url),
+        content: `[Extraction failed: ${error.message}]\n\nSource: ${url}`,
+        author: null, type: route.type, url,
+      };
+    }
+  }
+
+  /**
+   * Ingest multiple extracted sources into a single merged note.
+   * Combines all content with dividers, runs one summarization pass.
+   *
+   * @param {Array<{ title: string, content: string, type: string, url: string }>} sources
+   * @param {Object} opts
+   * @param {string} opts.annotation - User's surrounding text
+   * @returns {Promise<{ pageId: string, notionUrl: string, title: string }>}
+   */
+  async ingestMultiSource(sources, opts = {}) {
+    const startTime = Date.now();
+    console.log(`\n[MediaPipeline] === Multi-source ingest (${sources.length} sources) ===`);
+
+    // Merge content with section dividers
+    const sections = [];
+    if (opts.annotation) {
+      sections.push(opts.annotation);
+    }
+    for (const src of sources) {
+      sections.push(`## ${src.title}\nSource: ${src.url}\n\n${src.content}`);
+    }
+    const mergedContent = sections.join('\n\n---\n\n');
+
+    // Single summarization pass over combined content
+    let summary = null;
+    if (this.summarizer) {
+      summary = await this.summarizer.summarize(mergedContent, 'article', {
+        title: sources[0]?.title,
+      });
+    }
+
+    const title = summary?.title || sources[0]?.title || 'Multi-source capture';
+    const processingTime = (Date.now() - startTime) / 1000;
+
+    const pageId = await this.notion.createStructuredPage({
+      title,
+      content: mergedContent,
+      summary,
+      source: 'Idea',
+      sourceRef: sources.map(s => s.url).join(' | '),
+      metadata: {
+        urls: sources.map(s => s.url),
+        processingTime: Math.round(processingTime),
+      },
+      annotation: opts.annotation || null,
       telegramMessageId: opts.telegramMessageId || null,
     });
 

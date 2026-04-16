@@ -861,9 +861,9 @@ describe('TelegramBot', () => {
         if (bot.cleanupInterval) clearInterval(bot.cleanupInterval);
       });
 
-      it('should remove entries older than 30 minutes', () => {
+      it('should remove entries older than 1 hour', () => {
         const now = Date.now();
-        bot.pendingSources.set(1, { pageId: 'old', timestamp: now - 31 * 60 * 1000 });
+        bot.pendingSources.set(1, { pageId: 'old', timestamp: now - 61 * 60 * 1000 });
         bot.pendingSources.set(2, { pageId: 'fresh', timestamp: now });
 
         bot.startCleanupTimer();
@@ -873,7 +873,7 @@ describe('TelegramBot', () => {
         expect(bot.pendingSources.has(2)).toBe(true);
       });
 
-      it('should keep entries younger than 30 minutes', () => {
+      it('should keep entries younger than 1 hour', () => {
         const now = Date.now();
         bot.pendingSources.set(1, { pageId: 'recent', timestamp: now - 10 * 60 * 1000 });
 

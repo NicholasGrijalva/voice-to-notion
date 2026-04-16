@@ -161,8 +161,8 @@ describe('ContentRouter', () => {
       expect(ContentRouter.isMediaUrl('https://soundcloud.com/artist/track')).toBe(true);
     });
 
-    it('should return true for spotify.com URL', () => {
-      expect(ContentRouter.isMediaUrl('https://open.spotify.com/episode/abc')).toBe(true);
+    it('should return false for spotify.com URL (yt-dlp extractor broken)', () => {
+      expect(ContentRouter.isMediaUrl('https://open.spotify.com/episode/abc')).toBe(false);
     });
 
     it('should return true for tiktok.com URL', () => {

@@ -16,6 +16,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const ocr = require('./ocr');
+const ContentRouter = require('./content-router');
 
 const PostWorkflow = require('./publish/post-workflow');
 const TypefullyClient = require('./publish/typefully-client');
@@ -50,6 +51,10 @@ class TelegramBot {
     // Reply chain: track messages that created pages/notes
     // message_id -> { pageId, timestamp }
     this.pendingSources = new Map();
+
+    // Sticky context: auto-append photos within 10 min of last note
+    // userId -> { pageId, timestamp, title }
+    this.stickyContext = new Map();
 
     this.ensureDir(this.tempDir);
 
@@ -165,6 +170,12 @@ class TelegramBot {
     // /status command -- system health dashboard
     this.bot.command('status', (ctx) => this.handleStatusCommand(ctx));
 
+    // /new command -- break sticky context, start fresh note
+    this.bot.command('new', (ctx) => {
+      this.stickyContext.delete(ctx.from.id);
+      ctx.reply('Context cleared -- next message starts a new note.');
+    });
+
     // ── Publish commands ──────────────────────────────────────────────────
     this.bot.command('draft', (ctx) => this.handleDraftCommand(ctx));
     this.bot.command('post', (ctx) => this.handlePostCommand(ctx));
@@ -221,6 +232,7 @@ class TelegramBot {
    */
   async handleReplyChain(ctx, originalMessageId) {
     const { pageId } = this.pendingSources.get(originalMessageId);
+    console.log(`[TelegramBot] Reply chain: appending to page ${pageId}`);
     const status = await ctx.reply('Adding your take...');
     let tempPath = null;
 
@@ -247,7 +259,9 @@ class TelegramBot {
         const largest = photos[photos.length - 1];
         const caption = ctx.message.caption || null;
         tempPath = await this.downloadTelegramFile(ctx, largest.file_id, 'photo');
+        console.log('[TelegramBot] Reply chain: running OCR...');
         replyText = await ocr.ocrImage(tempPath, { context: caption });
+        console.log(`[TelegramBot] Reply chain: OCR done (${replyText.length} chars)`);
 
         try {
           const filename = `reply-photo-${Date.now()}${path.extname(tempPath)}`;
@@ -289,6 +303,28 @@ class TelegramBot {
         });
       }
 
+      // For photo replies with substantial OCR, summarize into key points
+      if (isPhotoReply && this.pipeline.summarizer && replyText.length > 100) {
+        try {
+          const summary = await this.pipeline.summarizer.summarize(replyText, 'idea');
+          if (summary?.keyPoints?.length) {
+            blocks.push({
+              object: 'block', type: 'heading_3',
+              heading_3: { rich_text: [{ type: 'text', text: { content: 'Key Points' } }] },
+            });
+            for (const point of summary.keyPoints) {
+              blocks.push({
+                object: 'block', type: 'bulleted_list_item',
+                bulleted_list_item: { rich_text: [{ type: 'text', text: { content: point } }] },
+              });
+            }
+            blocks.push({ object: 'block', type: 'divider', divider: {} });
+          }
+        } catch (err) {
+          console.warn('[TelegramBot] Reply summarization failed:', err.message);
+        }
+      }
+
       blocks.push(
         ...this.notion.splitText(replyText, 1900).map(chunk => ({
           object: 'block',
@@ -300,21 +336,27 @@ class TelegramBot {
       );
 
       await this.notion.appendBlocks(pageId, blocks);
-      // Keep tracking alive -- rely on 30-min TTL cleanup instead of
+      console.log(`[TelegramBot] Reply chain: appended ${blocks.length} blocks to ${pageId}`);
+      // Keep tracking alive -- rely on 1-hour TTL cleanup instead of
       // deleting after first reply, so multiple replies can append.
 
       const takeMsg = replyImageUploadId === null && ctx.message.photo
-        ? 'Added your take to the page (image upload failed).'
-        : 'Added your take to the page.';
+        ? 'Added your take (image upload failed).'
+        : 'Added your take.';
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
         takeMsg
       );
     } catch (error) {
-      await ctx.telegram.editMessageText(
-        ctx.chat.id, status.message_id, null,
-        `Failed to add take: ${error.message}`
-      );
+      console.error(`[TelegramBot] Reply chain error: ${error.message}`);
+      try {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          `Failed to add take: ${error.message}`
+        );
+      } catch (editErr) {
+        console.error(`[TelegramBot] Could not send error message: ${editErr.message}`);
+      }
     } finally {
       this.cleanup(tempPath);
     }
@@ -340,13 +382,145 @@ class TelegramBot {
   startCleanupTimer() {
     this.cleanupInterval = setInterval(() => {
       const now = Date.now();
-      const TTL = 30 * 60 * 1000; // 30 minutes
+      const REPLY_TTL = 60 * 60 * 1000; // 1 hour for manual reply chain
+      const STICKY_TTL = 10 * 60 * 1000; // 10 min for sticky context
       for (const [msgId, { timestamp }] of this.pendingSources) {
-        if (now - timestamp > TTL) {
+        if (now - timestamp > REPLY_TTL) {
           this.pendingSources.delete(msgId);
         }
       }
+      for (const [userId, { timestamp }] of this.stickyContext) {
+        if (now - timestamp > STICKY_TTL) {
+          this.stickyContext.delete(userId);
+        }
+      }
     }, 5 * 60 * 1000);
+  }
+
+  // ─── Sticky Context ──────────────────────────────────────────────────────
+  // Photos auto-append within a 10-min window. Text/voice use manual reply.
+  // Each append resets the timer. /new breaks the chain.
+
+  getStickyContext(userId) {
+    const ctx = this.stickyContext.get(userId);
+    if (!ctx) return null;
+    if (Date.now() - ctx.timestamp > 10 * 60 * 1000) {
+      this.stickyContext.delete(userId);
+      return null;
+    }
+    return ctx;
+  }
+
+  setStickyContext(userId, pageId, title) {
+    this.stickyContext.set(userId, { pageId, timestamp: Date.now(), title });
+  }
+
+  /**
+   * Auto-append a photo to the current sticky context note.
+   * OCRs the image, uploads it, appends as a "Continuation" section.
+   */
+  async appendPhotoToSticky(ctx, sticky) {
+    const photos = ctx.message.photo;
+    const largest = photos[photos.length - 1];
+    const caption = ctx.message.caption || null;
+
+    console.log(`[TelegramBot] Sticky append: photo -> "${sticky.title}" (${sticky.pageId})`);
+    const status = await ctx.reply(`Adding to "${sticky.title}"... (/new to start fresh)`);
+    let tempPath = null;
+
+    try {
+      tempPath = await this.downloadTelegramFile(ctx, largest.file_id, 'photo');
+      console.log('[TelegramBot] Sticky append: running OCR...');
+      const ocrText = await ocr.ocrImage(tempPath, { context: caption });
+      console.log(`[TelegramBot] Sticky append: OCR done (${ocrText.length} chars)`);
+
+      // Upload image
+      let imageUploadId = null;
+      try {
+        const filename = `photo-${Date.now()}${path.extname(tempPath)}`;
+        imageUploadId = await this.notion.uploadFile(tempPath, filename, this.getImageMimeType(tempPath));
+      } catch (err) {
+        console.warn('[TelegramBot] Sticky image upload failed:', err.message);
+      }
+
+      // Build append blocks with section heading
+      const blocks = [
+        { object: 'block', type: 'divider', divider: {} },
+        {
+          object: 'block', type: 'heading_2',
+          heading_2: { rich_text: [{ type: 'text', text: { content: 'Continuation' } }] },
+        },
+      ];
+
+      if (imageUploadId) {
+        blocks.push({
+          object: 'block', type: 'image',
+          image: { type: 'file_upload', file_upload: { id: imageUploadId } },
+        });
+      }
+
+      if (caption) {
+        blocks.push({
+          object: 'block', type: 'paragraph',
+          paragraph: { rich_text: [{ type: 'text', text: { content: caption } }] },
+        });
+      }
+
+      // Summarize OCR into key points if substantial
+      if (ocrText && ocrText.length > 100 && this.pipeline.summarizer) {
+        try {
+          const summary = await this.pipeline.summarizer.summarize(ocrText, 'idea');
+          if (summary?.keyPoints?.length) {
+            blocks.push({
+              object: 'block', type: 'heading_3',
+              heading_3: { rich_text: [{ type: 'text', text: { content: 'Key Points' } }] },
+            });
+            for (const point of summary.keyPoints) {
+              blocks.push({
+                object: 'block', type: 'bulleted_list_item',
+                bulleted_list_item: { rich_text: [{ type: 'text', text: { content: point } }] },
+              });
+            }
+            blocks.push({ object: 'block', type: 'divider', divider: {} });
+          }
+        } catch (err) {
+          console.warn('[TelegramBot] Sticky summarization failed:', err.message);
+        }
+      }
+
+      if (ocrText && ocrText.length > 10) {
+        blocks.push(
+          ...this.notion.splitText(ocrText, 1900).map(chunk => ({
+            object: 'block', type: 'paragraph',
+            paragraph: { rich_text: [{ type: 'text', text: { content: chunk } }] },
+          }))
+        );
+      }
+
+      await this.notion.appendBlocks(sticky.pageId, blocks);
+      console.log(`[TelegramBot] Sticky append: ${blocks.length} blocks appended`);
+
+      // Reset sticky timer + track for reply chain
+      this.setStickyContext(ctx.from.id, sticky.pageId, sticky.title);
+      this.trackSource(ctx.message.message_id, sticky.pageId, status.message_id);
+
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, status.message_id, null,
+        `Added to "${sticky.title}". /new to start fresh.`
+      );
+    } catch (error) {
+      console.error(`[TelegramBot] Sticky append error: ${error.message}`);
+      try {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          `Failed to append: ${error.message}`
+        );
+      } catch (editErr) {
+        console.error(`[TelegramBot] Could not send error message: ${editErr.message}`);
+      }
+    } finally {
+      this.cleanup(tempPath);
+    }
   }
 
   // ─── Message Handlers ─────────────────────────────────────────────────────
@@ -370,6 +544,7 @@ class TelegramBot {
       try {
         const result = await this.pipeline.ingestText(text.trim(), { telegramMessageId: ctx.message.message_id });
         this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
+        this.setStickyContext(ctx.from.id, result.pageId, result.title);
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
           this.formatResult(result.title, result.pageId)
@@ -386,11 +561,68 @@ class TelegramBot {
     // URLs found — extract surrounding text as annotation
     const annotation = text.replace(URL_REGEX, '').trim() || null;
 
-    for (const url of urls) {
+    // Separate YouTube/media URLs (need audio download) from web URLs (text extraction)
+    const mediaUrls = urls.filter(u => {
+      const route = ContentRouter.detect(u);
+      return route.type === 'youtube' || ContentRouter.isMediaUrl(u);
+    });
+    const webUrls = urls.filter(u => !mediaUrls.includes(u));
+
+    // YouTube/media URLs get individual notes
+    for (const url of mediaUrls) {
       const status = await ctx.reply(`Processing: ${url}`);
       try {
         const result = await this.pipeline.ingestUrl(url, { annotation, telegramMessageId: ctx.message.message_id });
         this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
+        this.setStickyContext(ctx.from.id, result.pageId, result.title);
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          this.formatResult(result.title, result.pageId)
+        );
+      } catch (error) {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          `Failed: ${error.message}`
+        );
+      }
+    }
+
+    // Web URLs: single URL uses standard path, multiple merge into one note
+    if (webUrls.length === 1) {
+      const status = await ctx.reply(`Processing: ${webUrls[0]}`);
+      try {
+        const result = await this.pipeline.ingestUrl(webUrls[0], { annotation, telegramMessageId: ctx.message.message_id });
+        this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
+        this.setStickyContext(ctx.from.id, result.pageId, result.title);
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          this.formatResult(result.title, result.pageId)
+        );
+      } catch (error) {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, status.message_id, null,
+          `Failed: ${error.message}`
+        );
+      }
+    } else if (webUrls.length > 1) {
+      const status = await ctx.reply(`Processing ${webUrls.length} links...`);
+      try {
+        const sources = [];
+        for (const url of webUrls) {
+          const extracted = await this.pipeline.extractUrl(url);
+          if (extracted) sources.push(extracted);
+        }
+        if (sources.length === 0) {
+          await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, null,
+            'Could not extract content from any of the links.');
+          return;
+        }
+        const result = await this.pipeline.ingestMultiSource(sources, {
+          annotation,
+          telegramMessageId: ctx.message.message_id,
+        });
+        this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
+        this.setStickyContext(ctx.from.id, result.pageId, result.title);
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
           this.formatResult(result.title, result.pageId)
@@ -405,8 +637,14 @@ class TelegramBot {
   }
 
   async handlePhoto(ctx) {
-    // Check reply chain first
+    // Check reply chain first (explicit Telegram reply)
     if (await this.checkReplyChain(ctx)) return;
+
+    // Sticky context: auto-append photos within 10-min window
+    const sticky = this.getStickyContext(ctx.from.id);
+    if (sticky) {
+      return this.appendPhotoToSticky(ctx, sticky);
+    }
 
     const photos = ctx.message.photo;
     const largest = photos[photos.length - 1]; // highest resolution
@@ -454,11 +692,13 @@ class TelegramBot {
         telegramMessageId: ctx.message.message_id,
       });
 
+      const finalTitle = summary?.title || title;
       this.trackSource(ctx.message.message_id, pageId, status.message_id);
+      this.setStickyContext(ctx.from.id, pageId, finalTitle);
 
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
-        this.formatResult(summary?.title || title, pageId)
+        this.formatResult(finalTitle, pageId)
       );
     } catch (error) {
       await ctx.telegram.editMessageText(
@@ -510,6 +750,7 @@ class TelegramBot {
       tempPath = await this.downloadTelegramFile(ctx, fileObj.file_id, type);
       const result = await this.pipeline.ingestFile(tempPath, { title, telegramMessageId: ctx.message.message_id });
       this.trackSource(ctx.message.message_id, result.pageId, status.message_id);
+      this.setStickyContext(ctx.from.id, result.pageId, result.title);
       await ctx.telegram.editMessageText(
         ctx.chat.id, status.message_id, null,
         this.formatResult(result.title, result.pageId)
@@ -536,6 +777,14 @@ class TelegramBot {
     const imageExts = /\.(jpg|jpeg|png|webp|heic)$/i;
 
     if (imageExts.test(doc.file_name || '')) {
+      // Sticky context: auto-append image documents within 10-min window
+      const sticky = this.getStickyContext(ctx.from.id);
+      if (sticky) {
+        // Reuse photo sticky append (treat document-image like a photo)
+        ctx.message.photo = [{ file_id: doc.file_id, file_size: doc.file_size }];
+        return this.appendPhotoToSticky(ctx, sticky);
+      }
+
       // Route image documents through photo/OCR + summarizer
       if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
         return ctx.reply('Image too large (>20MB).');
@@ -578,11 +827,13 @@ class TelegramBot {
           telegramMessageId: ctx.message.message_id,
         });
 
+        const docTitle = summary?.title || title;
         this.trackSource(ctx.message.message_id, pageId, status.message_id);
+        this.setStickyContext(ctx.from.id, pageId, docTitle);
 
         await ctx.telegram.editMessageText(
           ctx.chat.id, status.message_id, null,
-          this.formatResult(summary?.title || title, pageId)
+          this.formatResult(docTitle, pageId)
         );
       } catch (error) {
         await ctx.telegram.editMessageText(

@@ -53,7 +53,8 @@ class ContentRouter {
       /youtube\.com|youtu\.be/,
       /vimeo\.com/,
       /soundcloud\.com/,
-      /spotify\.com/,
+      // Spotify removed: yt-dlp extractor is broken (wontfix upstream).
+      // Spotify URLs route through web scraper for metadata capture instead.
       /tiktok\.com/,
       /twitch\.tv/,
       /podcasts\.apple\.com/,
